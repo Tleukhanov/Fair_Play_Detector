@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fair-play-detector"
+version = "0.1.0"
+description = "Probabilistic fair-play analysis service for public Lichess games."
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.115,<1.0",
+  "pydantic>=2.9,<3.0",
+  "uvicorn[standard]>=0.30,<1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "mypy>=1.11,<2.0",
+  "pytest>=8.3,<9.0",
+  "ruff>=0.6,<1.0",
+]
+
+[tool.setuptools.packages.find]
+include = ["apps*", "packages*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+files = ["apps", "packages"]
