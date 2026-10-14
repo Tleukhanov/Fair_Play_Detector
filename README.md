@@ -27,6 +27,18 @@ The health endpoint is available at `GET /health`. API DTOs are defined in
 No database or external service is required for the skeleton checks. Keep
 credentials in local environment variables and never commit `.env`.
 
+The current API surface is:
+
+- `POST /api/v1/scans` — creates a queued scan;
+- `GET /api/v1/scans/{scan_id}` — returns scan progress;
+- `GET /api/v1/scans/{scan_id}/verdict` — returns a completed verdict;
+- `GET /api/v1/scans/{scan_id}/games` — returns paginated games;
+- `GET /api/v1/scans/{scan_id}/games/{game_id}` — returns game details.
+
+The scan remains `queued` until a worker is connected. A verdict is therefore
+not available from this skeleton API yet; this is reported explicitly as
+`409 Conflict`, rather than as a successful empty result.
+
 The ingest package exposes `LichessClient` for bounded public exports and
 `iter_pgn_games` for per-game PGN parsing. It validates usernames, streams
 response chunks, handles transient failures with bounded retry/backoff, and

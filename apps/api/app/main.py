@@ -2,6 +2,7 @@
 
 from fastapi import FastAPI
 
+from .api.routes import router as scans_router
 from .config import get_settings
 
 settings = get_settings()
@@ -11,6 +12,7 @@ app = FastAPI(
     version="0.1.0",
     description="Probabilistic analysis of public Lichess game behaviour.",
 )
+app.include_router(scans_router)
 
 
 @app.get("/health", tags=["system"])
