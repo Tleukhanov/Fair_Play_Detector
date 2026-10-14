@@ -6,9 +6,9 @@ not proof of cheating or grounds for automatic moderation.
 
 ## Development skeleton
 
-The repository currently contains the shared Python contracts and API skeleton.
-Collectors, workers, persistence, ML, LLM, frontend, and infrastructure are
-planned follow-up components.
+The repository contains shared Python contracts, SQLite persistence, and the
+initial Lichess streaming ingest package. Workers, ML, LLM, frontend, and
+production infrastructure are planned follow-up components.
 
 Use Python 3.11 or newer:
 
@@ -26,3 +26,8 @@ The health endpoint is available at `GET /health`. API DTOs are defined in
 
 No database or external service is required for the skeleton checks. Keep
 credentials in local environment variables and never commit `.env`.
+
+The ingest package exposes `LichessClient` for bounded public exports and
+`iter_pgn_games` for per-game PGN parsing. It validates usernames, streams
+response chunks, handles transient failures with bounded retry/backoff, and
+records malformed-game errors without logging or persisting complete PGNs.
