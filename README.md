@@ -39,6 +39,11 @@ The scan remains `queued` until a worker is connected. A verdict is therefore
 not available from this skeleton API yet; this is reported explicitly as
 `409 Conflict`, rather than as a successful empty result.
 
+Worker orchestration is defined in `apps/api/app/workers`. The pipeline
+requires fetch, analysis, scoring, and explanation stages, enforces their
+ordering, and supports explicit failure transitions. A unique scan lease is
+reserved for future queue workers so one scan cannot be claimed twice.
+
 The ingest package exposes `LichessClient` for bounded public exports and
 `iter_pgn_games` for per-game PGN parsing. It validates usernames, streams
 response chunks, handles transient failures with bounded retry/backoff, and

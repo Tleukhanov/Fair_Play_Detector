@@ -49,6 +49,7 @@ class ScanModel(Base):
     model_version: Mapped[str | None] = mapped_column(String(100))
     error_code: Mapped[str | None] = mapped_column(String(100))
     error_message: Mapped[str | None] = mapped_column(Text)
+    lease_id: Mapped[str | None] = mapped_column(String(36), unique=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
     started_at: Mapped[datetime | None] = mapped_column(DateTime)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime)
