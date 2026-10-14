@@ -35,6 +35,8 @@ class Settings(BaseSettings):
     )
     analysis_depth: int = Field(default=15, ge=1, validation_alias="ANALYSIS_DEPTH")
     analysis_time_ms: int = Field(default=100, ge=1, validation_alias="ANALYSIS_TIME_MS")
+    max_concurrent_scans: int = Field(default=2, ge=1, validation_alias="MAX_CONCURRENT_SCANS")
+    max_pending_scans: int = Field(default=20, ge=0, validation_alias="MAX_PENDING_SCANS")
 
 
 @lru_cache
