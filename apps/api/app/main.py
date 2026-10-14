@@ -2,8 +2,12 @@
 
 from fastapi import FastAPI
 
+from .config import get_settings
+
+settings = get_settings()
+
 app = FastAPI(
-    title="Fair Play Detector API",
+    title=settings.app_name,
     version="0.1.0",
     description="Probabilistic analysis of public Lichess game behaviour.",
 )
