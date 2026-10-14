@@ -87,9 +87,12 @@ class GameModel(Base):
 
 class GameFeaturesModel(Base):
     __tablename__ = "game_features"
+    __table_args__ = (UniqueConstraint("cache_key"),)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
     game_id: Mapped[str] = mapped_column(ForeignKey("games.id"), nullable=False, index=True)
+    cache_key: Mapped[str] = mapped_column(String(128), nullable=False, unique=True, index=True)
+    pgn_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     feature_version: Mapped[str] = mapped_column(String(30), nullable=False)
     aggregates: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     moves: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False)

@@ -1,6 +1,7 @@
 """Persistence-aware analysis, scoring, and verdict stages."""
 
 from dataclasses import asdict
+from hashlib import sha256
 from uuid import UUID, uuid4
 
 from sqlalchemy import select
@@ -49,6 +50,21 @@ class ChessAnalysisStage:
                 raise ScanPipelineError("USER_NOT_FOUND", "scan user not found")
             try:
                 for game in games:
+                    cache_key = _analysis_cache_key(
+                        game.pgn_hash,
+                        self._engine.config.engine_name,
+                        self._engine.config.engine_version,
+                        self._engine.config.depth,
+                        self._engine.config.time_ms,
+                        self._feature_version,
+                    )
+                    cached = await session.scalar(
+                        select(GameFeaturesModel).where(
+                            GameFeaturesModel.cache_key == cache_key
+                        )
+                    )
+                    if cached is not None:
+                        continue
                     moves = await self._engine.analyze_game(
                         game.pgn or "", user.username_normalized
                     )
@@ -57,6 +73,8 @@ class ChessAnalysisStage:
                         GameFeaturesModel(
                             id=str(uuid4()),
                             game_id=game.id,
+                            cache_key=cache_key,
+                            pgn_hash=game.pgn_hash,
                             feature_version=self._feature_version,
                             aggregates=aggregate.model_dump(),
                             moves=[asdict(move) for move in moves],
@@ -70,6 +88,20 @@ class ChessAnalysisStage:
             except (EngineAnalysisError, ValueError) as exc:
                 await session.rollback()
                 raise ScanPipelineError("ANALYSIS_FAILED", str(exc)) from exc
+
+
+def _analysis_cache_key(
+    pgn_hash: str,
+    engine_name: str,
+    engine_version: str,
+    depth: int,
+    time_ms: int,
+    feature_version: str,
+) -> str:
+    payload = "|".join(
+        (pgn_hash, engine_name, engine_version, str(depth), str(time_ms), feature_version)
+    )
+    return sha256(payload.encode("utf-8")).hexdigest()
 
 
 class ScoringStage:
