@@ -21,6 +21,8 @@ from ..schemas.api import (
     ScanStatusResponse,
     VerdictResponse,
 )
+from ..workers.dependencies import get_scan_executor
+from ..workers.executor import BackgroundScanExecutor, ExecutorCapacityError
 
 router = APIRouter(prefix="/api/v1/scans", tags=["scans"])
 
@@ -29,6 +31,7 @@ router = APIRouter(prefix="/api/v1/scans", tags=["scans"])
 async def create_scan(
     request: ScanCreateRequest,
     session: AsyncSession = Depends(get_session),
+    executor: BackgroundScanExecutor = Depends(get_scan_executor),
 ) -> ScanCreateResponse:
     """Create a queued scan after validating and normalizing its username."""
 
@@ -57,6 +60,17 @@ async def create_scan(
     )
     session.add(scan)
     await session.commit()
+    try:
+        executor.submit(UUID(scan.id))
+    except ExecutorCapacityError as exc:
+        scan = await session.get(ScanModel, scan.id)
+        if scan is not None:
+            scan.status = ScanStatus.FAILED.value
+            scan.error_code = "QUEUE_FULL"
+            scan.error_message = "scan queue capacity exceeded"
+            scan.completed_at = datetime.utcnow()
+            await session.commit()
+        raise HTTPException(status_code=503, detail="scan queue capacity exceeded") from exc
     return ScanCreateResponse(
         scan_id=UUID(scan.id),
         status=ScanStatus.QUEUED,
