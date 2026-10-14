@@ -26,13 +26,15 @@ class Settings(BaseSettings):
         validation_alias="LICHESS_API_BASE_URL",
     )
     database_url: str = Field(
-        default="postgresql+asyncpg://postgres:postgres@localhost:5432/fair_play_detector",
+        default="sqlite+aiosqlite:///./data/fair_play.db",
         validation_alias="DATABASE_URL",
     )
     redis_url: str = Field(
-        default="redis://localhost:6379/0",
+        default="",
         validation_alias="REDIS_URL",
     )
+    analysis_depth: int = Field(default=15, ge=1, validation_alias="ANALYSIS_DEPTH")
+    analysis_time_ms: int = Field(default=100, ge=1, validation_alias="ANALYSIS_TIME_MS")
 
 
 @lru_cache
