@@ -44,6 +44,11 @@ requires fetch, analysis, scoring, and explanation stages, enforces their
 ordering, and supports explicit failure transitions. A unique scan lease is
 reserved for future queue workers so one scan cannot be claimed twice.
 
+The LLM package accepts only verified score/evidence data and exposes a
+deterministic fallback. Explanation output cannot replace or mutate the
+numeric risk score, and every fallback explanation includes the probabilistic
+limitation.
+
 The ingest package exposes `LichessClient` for bounded public exports and
 `iter_pgn_games` for per-game PGN parsing. It validates usernames, streams
 response chunks, handles transient failures with bounded retry/backoff, and
