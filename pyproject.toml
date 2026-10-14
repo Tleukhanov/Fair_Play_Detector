@@ -25,6 +25,10 @@ dev = [
   "pytest>=8.3,<9.0",
   "ruff>=0.6,<1.0",
 ]
+dataset = [
+  "pyarrow>=18.0,<20.0",
+  "zstandard>=0.23,<1.0",
+]
 
 [tool.setuptools.packages.find]
 include = ["apps*", "packages*"]

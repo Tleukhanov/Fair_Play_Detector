@@ -58,3 +58,19 @@ The ML package exposes `BaselineScorer` and strict model metadata/score
 contracts. The baseline requires at least 10 usable games, returns a calibrated
 score with a confidence interval and evidence, and must not be treated as a
 trained production model.
+
+Dataset collection is a separate gated command. Install the optional dataset
+dependencies, then provide both periods explicitly:
+
+```powershell
+python -m pip install -e ".[dataset]"
+python -m packages.dataset.cli `
+  --lichess-elite-month 2025-01 `
+  --tcec-season 2024 `
+  --output-dir data/processed
+```
+
+The command enforces a combined 5 GiB compressed-byte quota, writes two
+temporary-then-atomic Parquet files and `collection_report.json`, and stops
+without training. Do not start dataset splitting or model training until the
+report has been reviewed and explicitly approved.
