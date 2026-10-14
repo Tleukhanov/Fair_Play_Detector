@@ -40,3 +40,7 @@ select = ["E", "F", "I", "UP"]
 python_version = "3.11"
 strict = true
 files = ["apps", "packages"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
