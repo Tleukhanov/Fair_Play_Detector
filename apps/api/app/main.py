@@ -6,21 +6,25 @@ from fastapi import FastAPI
 
 from .api.routes import router as scans_router
 from .config import get_settings
+from .db.session import session_factory
+from .workers.default_stages import local_scan_stages
 from .workers.executor import BackgroundScanExecutor
+from .workers.service import ScanWorker
+from .workers.store import ScanWorkerStore
 
 settings = get_settings()
 
 
-async def _unconfigured_scan_job(_scan_id: object) -> None:
-    """Placeholder until the concrete scan worker is wired in."""
-
+def _create_scan_job():
+    worker = ScanWorker(ScanWorkerStore(session_factory), local_scan_stages())
+    return worker.run
 
 @asynccontextmanager
 async def lifespan(application: FastAPI):
     """Own the process-local executor for the lifetime of the API."""
 
     application.state.scan_executor = BackgroundScanExecutor(
-        _unconfigured_scan_job,
+        _create_scan_job(),
         max_concurrency=settings.max_concurrent_scans,
         max_pending=settings.max_pending_scans,
     )

@@ -1,5 +1,6 @@
 """Background scan orchestration contracts."""
 
+from .default_stages import LocalNoOpStage, local_scan_stages
 from .executor import BackgroundScanExecutor, ExecutorCapacityError
 from .pipeline import ScanPipeline, ScanPipelineError
 from .service import ScanWorker
@@ -10,6 +11,8 @@ __all__ = [
     "InvalidScanTransition",
     "BackgroundScanExecutor",
     "ExecutorCapacityError",
+    "LocalNoOpStage",
+    "local_scan_stages",
     "ScanPipeline",
     "ScanPipelineError",
     "ScanStateMachine",
