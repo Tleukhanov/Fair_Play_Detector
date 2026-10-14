@@ -4,6 +4,8 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from packages.ingest import LichessClient
+
 from .api.routes import router as scans_router
 from .config import get_settings
 from .db.session import session_factory
@@ -16,7 +18,13 @@ settings = get_settings()
 
 
 def _create_scan_job():
-    worker = ScanWorker(ScanWorkerStore(session_factory), local_scan_stages())
+    worker = ScanWorker(
+        ScanWorkerStore(session_factory),
+        local_scan_stages(
+            session_factory,
+            LichessClient(str(settings.lichess_api_base_url)),
+        ),
+    )
     return worker.run
 
 @asynccontextmanager
