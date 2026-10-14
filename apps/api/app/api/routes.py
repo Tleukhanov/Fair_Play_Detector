@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from packages.ingest.username import normalize_username
 
-from ..db.models import GameModel, ScanModel, UserModel
+from ..db.models import GameModel, ScanModel, UserModel, VerdictModel
 from ..db.session import get_session
 from ..schemas.api import (
     GameAggregateDTO,
@@ -111,7 +111,24 @@ async def get_scan_verdict(
         raise HTTPException(status_code=404, detail="scan not found")
     if scan.status != ScanStatus.COMPLETED.value:
         raise HTTPException(status_code=409, detail="verdict is not available")
-    raise HTTPException(status_code=404, detail="verdict not found")
+    verdict = await session.scalar(select(VerdictModel).where(VerdictModel.scan_id == str(scan_id)))
+    user = await session.get(UserModel, scan.user_id)
+    if verdict is None or user is None:
+        raise HTTPException(status_code=404, detail="verdict not found")
+    evidence = verdict.evidence
+    confidence_interval = (verdict.confidence_lower, verdict.confidence_upper)
+    return VerdictResponse(
+        scan_id=scan_id,
+        username=user.lichess_username,
+        risk_level=verdict.risk_level,
+        risk_score=verdict.risk_score,
+        confidence_interval=confidence_interval,
+        games_analyzed=scan.games_analyzed,
+        summary=verdict.summary,
+        evidence=evidence,
+        limitations=verdict.limitations,
+        model_version=verdict.model_version,
+    )
 
 
 @router.get("/{scan_id}/games", response_model=GamesResponse)

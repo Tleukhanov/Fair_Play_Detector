@@ -150,6 +150,8 @@ class ScoringStage:
                     scan_id=scan.id,
                     risk_level=result.risk_level,
                     risk_score=result.risk_score,
+                    confidence_lower=result.confidence_interval[0],
+                    confidence_upper=result.confidence_interval[1],
                     summary=explanation.summary,
                     evidence=[item.model_dump() for item in result.evidence],
                     limitations=explanation.limitations,

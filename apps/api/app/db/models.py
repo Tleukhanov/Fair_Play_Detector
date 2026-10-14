@@ -121,6 +121,8 @@ class VerdictModel(Base):
     scan_id: Mapped[str] = mapped_column(ForeignKey("scans.id"), unique=True, nullable=False)
     risk_level: Mapped[str] = mapped_column(String(20), nullable=False)
     risk_score: Mapped[float] = mapped_column(Float, nullable=False)
+    confidence_lower: Mapped[float] = mapped_column(Float, nullable=False)
+    confidence_upper: Mapped[float] = mapped_column(Float, nullable=False)
     summary: Mapped[str] = mapped_column(Text, nullable=False)
     evidence: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False)
     limitations: Mapped[list[str]] = mapped_column(JSON, nullable=False)
