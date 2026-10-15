@@ -25,13 +25,11 @@ from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 from xgboost import XGBClassifier
 
-FEATURE_NAMES = [
-    "move_count",
+BEHAVIOR_FEATURE_NAMES = [
     "mean_cpl",
     "top1_match_rate",
     "top3_match_rate",
     "mean_move_time_ms",
-    "rated",
 ]
 TARGET_COLUMN = "dataset_class"
 GROUP_COLUMNS = ("username", "dataset_class")
@@ -56,25 +54,58 @@ def _dataset_hash(paths: list[Path]) -> str:
     return digest.hexdigest()
 
 
-def _load(paths: list[Path]) -> tuple[np.ndarray, np.ndarray, np.ndarray, int]:
+def _load(
+    paths: list[Path], *, speed: str
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict[str, int]]:
     import pandas as pd
 
     frames = [parquet.read_table(path).to_pandas() for path in paths]
     frame = pd.concat(frames, ignore_index=True)
-    required_columns = [TARGET_COLUMN, *FEATURE_NAMES, *GROUP_COLUMNS]
+    required_columns = [
+        TARGET_COLUMN,
+        "move_count",
+        "speed",
+        *GROUP_COLUMNS,
+    ]
     missing = [column for column in required_columns if column not in frame]
     if missing:
         raise ValueError(f"training input is missing required columns: {', '.join(missing)}")
+    for column in BEHAVIOR_FEATURE_NAMES:
+        if column not in frame:
+            frame[column] = np.nan
+    frame = frame[
+        frame["move_count"].between(30, 80)
+        & frame["speed"].notna()
+        & frame["speed"].astype(str).str.casefold().eq(speed.casefold())
+    ].copy()
+    if frame.empty:
+        raise ValueError(
+            f"no rows remain after requiring speed={speed!r} and move_count between 30 and 80"
+        )
+    coverage = frame.groupby(TARGET_COLUMN)[BEHAVIOR_FEATURE_NAMES].apply(
+        lambda values: values.notna().mean().min()
+    )
+    if coverage.empty or (coverage < 0.95).any():
+        raise ValueError(
+            "behavioral features are incomplete; run Stockfish analysis before training "
+            f"(coverage by class: {coverage.to_dict()})"
+        )
     labels = (frame[TARGET_COLUMN] == "engine_like").astype(int).to_numpy()
-    features = frame[FEATURE_NAMES].copy()
-    for column in FEATURE_NAMES:
-        features[column] = pd.to_numeric(features[column], errors="coerce").fillna(0.0)
+    features = frame[BEHAVIOR_FEATURE_NAMES].astype(float)
     groups = (
         frame["username"].fillna("<anonymous>").astype(str)
         + "::"
         + frame["dataset_class"].astype(str)
     ).to_numpy()
-    return features.to_numpy(dtype=np.float64), labels, groups, len(frame)
+    return (
+        features.to_numpy(dtype=np.float64),
+        labels,
+        groups,
+        {
+            "rows_after_quality_filter": len(frame),
+            "rows_before_quality_filter": sum(len(item) for item in frames),
+        },
+    )
 
 
 def _split(features: np.ndarray, labels: np.ndarray, groups: np.ndarray) -> tuple[np.ndarray, ...]:
@@ -140,12 +171,14 @@ def _metrics(
     )
 
 
-def train_dataset(input_dir: Path, report_path: Path) -> dict[str, Any]:
+def train_dataset(
+    input_dir: Path, report_path: Path, *, speed: str = "rapid"
+) -> dict[str, Any]:
     """Train calibrated baseline and XGBoost models and write a JSON report."""
     paths = sorted(input_dir.glob("*_features.parquet"))
     if len(paths) < 2:
         raise ValueError("training requires both human and engine-like Parquet files")
-    features, labels, groups, row_count = _load(paths)
+    features, labels, groups, row_counts = _load(paths, speed=speed)
     train, valid, test = _split(features, labels, groups)
     estimators: dict[str, Any] = {
         "logistic_regression": make_pipeline(
@@ -182,8 +215,14 @@ def train_dataset(input_dir: Path, report_path: Path) -> dict[str, Any]:
         "report_version": "1.0.0",
         "trained_at": datetime.now(UTC).isoformat(),
         "dataset_hash": _dataset_hash(paths),
-        "row_count": row_count,
-        "feature_names": FEATURE_NAMES,
+        "row_count": row_counts["rows_after_quality_filter"],
+        "feature_names": BEHAVIOR_FEATURE_NAMES,
+        "quality_filter": {
+            "speed": speed,
+            "move_count_min": 30,
+            "move_count_max": 80,
+            "excluded_columns": ["rated", "speed", "result", "move_count"],
+        },
         "grouping": "username + dataset_class; no group crosses splits",
         "split_counts": {"train": len(train), "validation": len(valid), "test": len(test)},
         "models": [result.__dict__ for result in results],

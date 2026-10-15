@@ -14,8 +14,9 @@ def main() -> None:
         type=Path,
         default=Path("data/models/ml_training_report.json"),
     )
+    parser.add_argument("--speed", default="rapid")
     args = parser.parse_args()
-    report = train_dataset(args.input_dir, args.report)
+    report = train_dataset(args.input_dir, args.report, speed=args.speed)
     print(f"trained {len(report['models'])} models on {report['row_count']} rows")
 
 
