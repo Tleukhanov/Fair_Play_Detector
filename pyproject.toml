@@ -29,6 +29,12 @@ dataset = [
   "pyarrow>=18.0,<24.0",
   "zstandard>=0.23,<1.0",
 ]
+ml = [
+  "numpy>=2.0,<3.0",
+  "pandas>=2.2,<3.0",
+  "scikit-learn>=1.5,<2.0",
+  "xgboost>=2.1,<4.0",
+]
 
 [tool.setuptools.packages.find]
 include = ["apps*", "packages*"]
