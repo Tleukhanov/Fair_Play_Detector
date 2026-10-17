@@ -49,6 +49,7 @@ class ScanModel(Base):
     model_version: Mapped[str | None] = mapped_column(String(100))
     error_code: Mapped[str | None] = mapped_column(String(100))
     error_message: Mapped[str | None] = mapped_column(Text)
+    lease_id: Mapped[str | None] = mapped_column(String(36), unique=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
     started_at: Mapped[datetime | None] = mapped_column(DateTime)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime)
@@ -86,9 +87,12 @@ class GameModel(Base):
 
 class GameFeaturesModel(Base):
     __tablename__ = "game_features"
+    __table_args__ = (UniqueConstraint("cache_key"),)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
     game_id: Mapped[str] = mapped_column(ForeignKey("games.id"), nullable=False, index=True)
+    cache_key: Mapped[str] = mapped_column(String(128), nullable=False, unique=True, index=True)
+    pgn_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     feature_version: Mapped[str] = mapped_column(String(30), nullable=False)
     aggregates: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     moves: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False)
@@ -120,6 +124,8 @@ class VerdictModel(Base):
     scan_id: Mapped[str] = mapped_column(ForeignKey("scans.id"), unique=True, nullable=False)
     risk_level: Mapped[str] = mapped_column(String(20), nullable=False)
     risk_score: Mapped[float] = mapped_column(Float, nullable=False)
+    confidence_lower: Mapped[float] = mapped_column(Float, nullable=False)
+    confidence_upper: Mapped[float] = mapped_column(Float, nullable=False)
     summary: Mapped[str] = mapped_column(Text, nullable=False)
     evidence: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False)
     limitations: Mapped[list[str]] = mapped_column(JSON, nullable=False)

@@ -80,7 +80,7 @@ class GameAggregateDTO(DTOModel):
     speed: str
     result: str
     user_color: str
-    move_count: int = Field(ge=1)
+    move_count: int = Field(ge=0)
     top_move_match_rate: float = Field(ge=0.0, le=1.0)
     mean_centipawn_loss: float = Field(ge=0.0)
     maia_divergence: float = Field(ge=0.0)

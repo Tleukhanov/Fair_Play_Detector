@@ -6,9 +6,9 @@ not proof of cheating or grounds for automatic moderation.
 
 ## Development skeleton
 
-The repository currently contains the shared Python contracts and API skeleton.
-Collectors, workers, persistence, ML, LLM, frontend, and infrastructure are
-planned follow-up components.
+The repository contains shared Python contracts, SQLite persistence, Lichess
+streaming ingest, and a deterministic scoring baseline. LLM, frontend, and
+production infrastructure are planned follow-up components.
 
 Use Python 3.11 or newer:
 
@@ -26,3 +26,51 @@ The health endpoint is available at `GET /health`. API DTOs are defined in
 
 No database or external service is required for the skeleton checks. Keep
 credentials in local environment variables and never commit `.env`.
+
+The current API surface is:
+
+- `POST /api/v1/scans` — creates a queued scan;
+- `GET /api/v1/scans/{scan_id}` — returns scan progress;
+- `GET /api/v1/scans/{scan_id}/verdict` — returns a completed verdict;
+- `GET /api/v1/scans/{scan_id}/games` — returns paginated games;
+- `GET /api/v1/scans/{scan_id}/games/{game_id}` — returns game details.
+
+The scan remains `queued` until a worker is connected. A verdict is therefore
+not available from this skeleton API yet; this is reported explicitly as
+`409 Conflict`, rather than as a successful empty result.
+
+Worker orchestration is defined in `apps/api/app/workers`. The pipeline
+requires fetch, analysis, scoring, and explanation stages, enforces their
+ordering, and supports explicit failure transitions. A unique scan lease is
+reserved for future queue workers so one scan cannot be claimed twice.
+
+The LLM package accepts only verified score/evidence data and exposes a
+deterministic fallback. Explanation output cannot replace or mutate the
+numeric risk score, and every fallback explanation includes the probabilistic
+limitation.
+
+The ingest package exposes `LichessClient` for bounded public exports and
+`iter_pgn_games` for per-game PGN parsing. It validates usernames, streams
+response chunks, handles transient failures with bounded retry/backoff, and
+records malformed-game errors without logging or persisting complete PGNs.
+
+The ML package exposes `BaselineScorer` and strict model metadata/score
+contracts. The baseline requires at least 10 usable games, returns a calibrated
+score with a confidence interval and evidence, and must not be treated as a
+trained production model.
+
+Dataset collection is a separate gated command. Install the optional dataset
+dependencies, then provide both periods explicitly:
+
+```powershell
+python -m pip install -e ".[dataset]"
+python -m packages.dataset.cli `
+  --lichess-elite-month 2025-01 `
+  --tcec-season 2024 `
+  --output-dir data/processed
+```
+
+The command enforces a combined 5 GiB compressed-byte quota, writes two
+temporary-then-atomic Parquet files and `collection_report.json`, and stops
+without training. Do not start dataset splitting or model training until the
+report has been reviewed and explicitly approved.
