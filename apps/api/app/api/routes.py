@@ -1,20 +1,34 @@
 """Versioned scan API routes."""
 
+from collections.abc import Mapping, Sequence
 from datetime import datetime
+from typing import Any, cast
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from pydantic import HttpUrl
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from packages.chess_analysis.models import EVAL_CLIP_CP
 from packages.ingest.username import normalize_username
 
-from ..db.models import GameModel, ScanModel, UserModel, VerdictModel
+from ..db.models import (
+    GameFeaturesModel,
+    GameModel,
+    GameScoreModel,
+    ScanModel,
+    UserModel,
+    VerdictModel,
+)
 from ..db.session import get_session
 from ..schemas.api import (
+    EvidenceItem,
     GameAggregateDTO,
     GameDetailResponse,
+    GameMoveDTO,
     GamesResponse,
+    RiskLevel,
     ScanCreateRequest,
     ScanCreateResponse,
     ScanStatus,
@@ -56,6 +70,7 @@ async def create_scan(
         status=ScanStatus.QUEUED.value,
         requested_time_control=request.speed,
         requested_game_limit=request.max_games,
+        rated_only=request.rated_only,
         created_at=datetime.utcnow(),
     )
     session.add(scan)
@@ -63,12 +78,12 @@ async def create_scan(
     try:
         executor.submit(UUID(scan.id))
     except ExecutorCapacityError as exc:
-        scan = await session.get(ScanModel, scan.id)
-        if scan is not None:
-            scan.status = ScanStatus.FAILED.value
-            scan.error_code = "QUEUE_FULL"
-            scan.error_message = "scan queue capacity exceeded"
-            scan.completed_at = datetime.utcnow()
+        failed_scan = await session.get(ScanModel, scan.id)
+        if failed_scan is not None:
+            failed_scan.status = ScanStatus.FAILED.value
+            failed_scan.error_code = "QUEUE_FULL"
+            failed_scan.error_message = "scan queue capacity exceeded"
+            failed_scan.completed_at = datetime.utcnow()
             await session.commit()
         raise HTTPException(status_code=503, detail="scan queue capacity exceeded") from exc
     return ScanCreateResponse(
@@ -115,12 +130,12 @@ async def get_scan_verdict(
     user = await session.get(UserModel, scan.user_id)
     if verdict is None or user is None:
         raise HTTPException(status_code=404, detail="verdict not found")
-    evidence = verdict.evidence
+    evidence = [EvidenceItem.model_validate(item) for item in verdict.evidence]
     confidence_interval = (verdict.confidence_lower, verdict.confidence_upper)
     return VerdictResponse(
         scan_id=scan_id,
         username=user.lichess_username,
-        risk_level=verdict.risk_level,
+        risk_level=RiskLevel(verdict.risk_level),
         risk_score=verdict.risk_score,
         confidence_interval=confidence_interval,
         games_analyzed=scan.games_analyzed,
@@ -140,8 +155,8 @@ async def list_scan_games(
 ) -> GamesResponse:
     """Return a paginated list of games belonging to a scan."""
 
-    scan_exists = await session.scalar(select(ScanModel.id).where(ScanModel.id == str(scan_id)))
-    if scan_exists is None:
+    scan = await session.get(ScanModel, str(scan_id))
+    if scan is None:
         raise HTTPException(status_code=404, detail="scan not found")
     total = await session.scalar(
         select(func.count()).select_from(GameModel).where(GameModel.scan_id == str(scan_id))
@@ -155,9 +170,16 @@ async def list_scan_games(
             .limit(page_size)
         )
     ).all()
+    game_ids = [game.id for game in games]
+    # Two bulk queries instead of two per game.
+    features = await _features_by_game(session, game_ids)
+    scores = await _scores_by_game(session, game_ids, scan.model_version)
     return GamesResponse(
         scan_id=scan_id,
-        items=[_game_to_dto(game) for game in games],
+        items=[
+            _game_to_dto(game, features.get(game.id), scores.get(game.id))
+            for game in games
+        ],
         page=page,
         page_size=page_size,
         total=total or 0,
@@ -170,8 +192,11 @@ async def get_scan_game(
     game_id: str,
     session: AsyncSession = Depends(get_session),
 ) -> GameDetailResponse:
-    """Return game metadata; move details will be supplied by analysis workers."""
+    """Return game metadata and the analyzed moves for that game."""
 
+    scan = await session.get(ScanModel, str(scan_id))
+    if scan is None:
+        raise HTTPException(status_code=404, detail="scan not found")
     game = await session.scalar(
         select(GameModel).where(
             GameModel.id == game_id,
@@ -180,23 +205,153 @@ async def get_scan_game(
     )
     if game is None:
         raise HTTPException(status_code=404, detail="game not found")
+    features = await _features_by_game(session, [game.id])
+    scores = await _scores_by_game(session, [game.id], scan.model_version)
+    game_features = features.get(game.id)
     return GameDetailResponse(
         scan_id=scan_id,
-        game=_game_to_dto(game),
-        moves=[],
+        game=_game_to_dto(game, game_features, scores.get(game.id)),
+        moves=_moves_to_dto(game_features),
     )
 
 
-def _game_to_dto(game: GameModel) -> GameAggregateDTO:
+async def _features_by_game(
+    session: AsyncSession,
+    game_ids: Sequence[str],
+) -> dict[str, GameFeaturesModel]:
+    """Return the newest feature row per game in one query."""
+
+    if not game_ids:
+        return {}
+    rows = (
+        await session.scalars(
+            select(GameFeaturesModel)
+            .where(GameFeaturesModel.game_id.in_(game_ids))
+            .order_by(GameFeaturesModel.created_at)
+        )
+    ).all()
+    latest: dict[str, GameFeaturesModel] = {}
+    for row in rows:
+        latest[row.game_id] = row
+    return latest
+
+
+async def _scores_by_game(
+    session: AsyncSession,
+    game_ids: Sequence[str],
+    model_version: str | None,
+) -> dict[str, GameScoreModel]:
+    """Return one score row per game, preferring the scan's model version."""
+
+    if not game_ids:
+        return {}
+    rows = (
+        await session.scalars(
+            select(GameScoreModel).where(GameScoreModel.game_id.in_(game_ids))
+        )
+    ).all()
+    indexed: dict[str, GameScoreModel] = {}
+    for row in rows:
+        existing = indexed.get(row.game_id)
+        if existing is None or row.model_version == model_version:
+            indexed[row.game_id] = row
+    return indexed
+
+
+def _game_to_dto(
+    game: GameModel,
+    features: GameFeaturesModel | None = None,
+    score: GameScoreModel | None = None,
+) -> GameAggregateDTO:
+    """Map a game plus its persisted analysis into the aggregate DTO."""
+
+    aggregates: Mapping[str, Any] = features.aggregates if features is not None else {}
+    move_count_value = _as_float(aggregates.get("move_count"))
+    move_count = max(0, int(move_count_value)) if move_count_value is not None else 0
+    top_move_match_rate = _clamp_rate(_as_float(aggregates.get("top_1_match_rate")))
+    mean_centipawn_loss = max(0.0, _as_float(aggregates.get("mean_centipawn_loss")) or 0.0)
+    maia_divergence = _as_optional_non_negative(aggregates.get("maia_divergence"))
+    if score is not None:
+        top_move_match_rate = _clamp_rate(score.top_move_match_rate)
+        mean_centipawn_loss = max(0.0, score.mean_centipawn_loss)
+        if score.maia_divergence is not None:
+            maia_divergence = max(0.0, score.maia_divergence)
     return GameAggregateDTO(
         game_id=game.lichess_game_id,
-        source_url=game.source_url,
+        source_url=cast(HttpUrl, game.source_url),
         played_at=game.played_at,
         speed=game.speed,
         result=game.result,
         user_color=game.user_color,
-        move_count=0,
-        top_move_match_rate=0.0,
-        mean_centipawn_loss=0.0,
-        maia_divergence=0.0,
+        move_count=move_count,
+        top_move_match_rate=top_move_match_rate,
+        mean_centipawn_loss=mean_centipawn_loss,
+        maia_divergence=maia_divergence,
     )
+
+
+def _moves_to_dto(features: GameFeaturesModel | None) -> list[GameMoveDTO]:
+    """Map persisted move records, ignoring rows with unknown fields."""
+
+    if features is None or not features.moves:
+        return []
+    moves: list[GameMoveDTO] = []
+    for raw in features.moves:
+        if not isinstance(raw, Mapping):
+            continue
+        move = _move_to_dto(raw)
+        if move is not None:
+            moves.append(move)
+    return moves
+
+
+def _move_to_dto(raw: Mapping[str, Any]) -> GameMoveDTO | None:
+    ply = raw.get("ply")
+    fen_before = raw.get("fen_before")
+    played_move_uci = raw.get("played_move_uci")
+    if isinstance(ply, bool) or not isinstance(ply, int) or ply < 1:
+        return None
+    if not isinstance(fen_before, str) or not isinstance(played_move_uci, str):
+        return None
+    time_seconds = _as_optional_non_negative(raw.get("time_seconds"))
+    maia_probability = _as_optional_non_negative(raw.get("maia_move_probability"))
+    if maia_probability is not None:
+        maia_probability = min(1.0, maia_probability)
+    return GameMoveDTO(
+        ply=ply,
+        fen_before=fen_before,
+        played_move_uci=played_move_uci,
+        centipawn_loss=_move_centipawn_loss(raw),
+        is_top_1=bool(raw.get("is_top_1") or raw.get("is_top1_sf15")),
+        is_top_3=bool(raw.get("is_top_3")),
+        time_seconds=time_seconds,
+        maia_probability=maia_probability,
+    )
+
+
+def _move_centipawn_loss(raw: Mapping[str, Any]) -> float:
+    value = _as_float(raw.get("centipawn_loss"))
+    if value is None:
+        before = _as_float(raw.get("eval_before_cp"))
+        played = _as_float(raw.get("eval_played_move_cp"))
+        value = before - played if before is not None and played is not None else 0.0
+    return min(EVAL_CLIP_CP, max(0.0, value))
+
+
+def _as_float(value: object) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
+
+
+def _as_optional_non_negative(value: object) -> float | None:
+    number = _as_float(value)
+    if number is None:
+        return None
+    return max(0.0, number)
+
+
+def _clamp_rate(value: float | None) -> float:
+    if value is None:
+        return 0.0
+    return min(1.0, max(0.0, value))

@@ -83,7 +83,7 @@ class GameAggregateDTO(DTOModel):
     move_count: int = Field(ge=0)
     top_move_match_rate: float = Field(ge=0.0, le=1.0)
     mean_centipawn_loss: float = Field(ge=0.0)
-    maia_divergence: float = Field(ge=0.0)
+    maia_divergence: float | None = Field(default=None, ge=0.0)
 
 
 class GamesResponse(DTOModel):

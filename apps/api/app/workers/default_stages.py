@@ -1,13 +1,17 @@
-"""Safe local stages used until external integrations are configured."""
+"""Scan pipeline stages wired for local execution."""
 
 from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from packages.chess_analysis.protocol import ChessEngine
 from packages.ingest import LichessClient, LichessClientError, LichessIngestService
+from packages.llm import DeterministicExplainer
+from packages.ml.protocols import Scorer
 
 from ..db.models import ScanModel, UserModel
+from .analysis_stages import ChessAnalysisStage, ScoringStage
 from .pipeline import ScanPipelineError, ScanStage
 
 
@@ -42,6 +46,7 @@ class LichessFetchStage:
                     session,
                     scan,
                     username=user.username_normalized,
+                    rated_only=scan.rated_only,
                 )
             except LichessClientError as exc:
                 raise ScanPipelineError("INGEST_FAILED", str(exc)) from exc
@@ -50,15 +55,28 @@ class LichessFetchStage:
 def local_scan_stages(
     session_factory: async_sessionmaker[AsyncSession] | None = None,
     lichess_client: LichessClient | None = None,
+    *,
+    engine: ChessEngine | None = None,
+    scorer: Scorer | None = None,
+    explainer: DeterministicExplainer | None = None,
 ) -> tuple[ScanStage, ...]:
-    """Return the real fetch stage and local placeholders for later stages."""
+    """Return the four scan stages: fetch, analyze, score, and explain.
+
+    Analysis and scoring need an engine and a scorer.  When they are not
+    supplied the pipeline keeps the previous bounded no-op behaviour, which
+    keeps lightweight callers and tests working.
+    """
 
     if session_factory is None:
         return (LocalNoOpStage(), LocalNoOpStage(), LocalNoOpStage(), LocalNoOpStage())
     lichess_client = lichess_client or LichessClient()
-    return (
-        LichessFetchStage(session_factory, LichessIngestService(lichess_client)),
-        LocalNoOpStage(),
-        LocalNoOpStage(),
-        LocalNoOpStage(),
+    fetch: ScanStage = LichessFetchStage(
+        session_factory, LichessIngestService(lichess_client)
     )
+    if engine is None or scorer is None:
+        return (fetch, LocalNoOpStage(), LocalNoOpStage(), LocalNoOpStage())
+    analyze: ScanStage = ChessAnalysisStage(session_factory, engine)
+    score: ScanStage = ScoringStage(session_factory, scorer, explainer=explainer)
+    # ScoringStage already persisted the verdict; the final stage only carries
+    # the scan through EXPLAINING to COMPLETED.
+    return (fetch, analyze, score, LocalNoOpStage())

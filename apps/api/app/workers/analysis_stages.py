@@ -4,13 +4,15 @@ from dataclasses import asdict
 from hashlib import sha256
 from uuid import UUID, uuid4
 
-from sqlalchemy import select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from packages.chess_analysis import aggregate_game_features
 from packages.chess_analysis.protocol import ChessEngine, EngineAnalysisError
+from packages.feature_engineering.schema import GameAggregateFeatures
 from packages.llm import DeterministicExplainer, ExplanationEvidence, ExplanationInput
-from packages.ml import BaselineScorer, ScoringInput
+from packages.ml import ScoringInput
+from packages.ml.protocols import Scorer
 
 from ..db.models import (
     GameFeaturesModel,
@@ -21,6 +23,9 @@ from ..db.models import (
     VerdictModel,
 )
 from .pipeline import ScanPipelineError
+
+#: Version stored with every generated explanation.
+PROMPT_VERSION = "deterministic-v1"
 
 
 class ChessAnalysisStage:
@@ -58,12 +63,30 @@ class ChessAnalysisStage:
                         self._engine.config.time_ms,
                         self._feature_version,
                     )
-                    cached = await session.scalar(
-                        select(GameFeaturesModel).where(
-                            GameFeaturesModel.cache_key == cache_key
+                    already_analyzed = await session.scalar(
+                        select(GameFeaturesModel.id).where(
+                            GameFeaturesModel.game_id == game.id,
+                            GameFeaturesModel.cache_key == cache_key,
                         )
                     )
+                    if already_analyzed is not None:
+                        # Idempotent re-run of the same analysis identity.
+                        continue
+                    # A different engine/feature identity invalidates the stale
+                    # row: keep exactly one feature row per game so scoring
+                    # cannot insert two scores for the same model version.
+                    await _delete_game_features(session, game.id)
+                    cached = await session.scalar(
+                        select(GameFeaturesModel)
+                        .where(GameFeaturesModel.cache_key == cache_key)
+                        .order_by(GameFeaturesModel.created_at)
+                        .limit(1)
+                    )
                     if cached is not None:
+                        # Reuse the expensive analysis, but keep a per-game row.
+                        session.add(
+                            _copy_features(cached, game_id=game.id, cache_key=cache_key)
+                        )
                         continue
                     moves = await self._engine.analyze_game(
                         game.pgn or "", user.username_normalized
@@ -83,11 +106,54 @@ class ChessAnalysisStage:
                             depth_or_time_limit=f"{self._engine.config.depth}/{self._engine.config.time_ms}",
                         )
                     )
-                scan.games_analyzed = len(games)
+                await session.flush()
+                analyzed = await session.scalar(
+                    select(func.count(GameFeaturesModel.id))
+                    .join(GameModel, GameModel.id == GameFeaturesModel.game_id)
+                    .where(GameModel.scan_id == str(scan_id))
+                )
+                scan.games_analyzed = int(analyzed or 0)
                 await session.commit()
             except (EngineAnalysisError, ValueError) as exc:
                 await session.rollback()
                 raise ScanPipelineError("ANALYSIS_FAILED", str(exc)) from exc
+
+
+async def _delete_game_features(
+    session: AsyncSession,
+    game_id: str,
+) -> None:
+    """Remove stale analysis rows for one game before re-analysis."""
+
+    rows = (
+        await session.scalars(
+            select(GameFeaturesModel).where(GameFeaturesModel.game_id == game_id)
+        )
+    ).all()
+    for row in rows:
+        await session.delete(row)
+
+
+def _copy_features(
+    cached: GameFeaturesModel,
+    *,
+    game_id: str,
+    cache_key: str,
+) -> GameFeaturesModel:
+    """Clone cached analysis onto the current game with a fresh identity."""
+
+    return GameFeaturesModel(
+        id=str(uuid4()),
+        game_id=game_id,
+        cache_key=cache_key,
+        pgn_hash=cached.pgn_hash,
+        feature_version=cached.feature_version,
+        aggregates=dict(cached.aggregates),
+        moves=list(cached.moves),
+        engine_name=cached.engine_name,
+        engine_version=cached.engine_version,
+        depth_or_time_limit=cached.depth_or_time_limit,
+    )
 
 
 def _analysis_cache_key(
@@ -110,7 +176,7 @@ class ScoringStage:
     def __init__(
         self,
         session_factory: async_sessionmaker[AsyncSession],
-        scorer: BaselineScorer,
+        scorer: Scorer,
         *,
         explainer: DeterministicExplainer | None = None,
     ) -> None:
@@ -129,6 +195,7 @@ class ScoringStage:
                     select(GameModel, GameFeaturesModel)
                     .join(GameFeaturesModel, GameFeaturesModel.game_id == GameModel.id)
                     .where(GameModel.scan_id == str(scan_id))
+                    .order_by(GameModel.played_at)
                 )
             ).all()
             if user is None:
@@ -137,11 +204,21 @@ class ScoringStage:
                 result = self._scorer.score(
                     ScoringInput(
                         username_normalized=user.username_normalized,
-                        games=[row[1].aggregates for row in rows],
+                        games=[
+                            GameAggregateFeatures.model_validate(features.aggregates)
+                            for _game, features in rows
+                        ],
                     )
                 )
             except (ValueError, TypeError) as exc:
                 raise ScanPipelineError("SCORING_FAILED", str(exc)) from exc
+
+            # A re-run must replace earlier scores and the earlier verdict.
+            scan_game_ids = select(GameModel.id).where(GameModel.scan_id == str(scan_id))
+            await session.execute(
+                delete(GameScoreModel).where(GameScoreModel.game_id.in_(scan_game_ids))
+            )
+            await session.execute(delete(VerdictModel).where(VerdictModel.scan_id == scan.id))
             for game, features in rows:
                 session.add(
                     GameScoreModel(
@@ -173,7 +250,7 @@ class ScoringStage:
                     ],
                     limitations=["Automated analysis is not proof of cheating."],
                     model_version=result.model.model_version,
-                    prompt_version="deterministic-v1",
+                    prompt_version=PROMPT_VERSION,
                 )
             )
             session.add(
@@ -188,7 +265,9 @@ class ScoringStage:
                     evidence=[item.model_dump() for item in result.evidence],
                     limitations=explanation.limitations,
                     model_version=result.model.model_version,
-                    prompt_version=explanation.prompt_version,
+                    prompt_version=PROMPT_VERSION,
                 )
             )
+            scan.model_version = result.model.model_version
+            scan.games_analyzed = len(rows)
             await session.commit()
