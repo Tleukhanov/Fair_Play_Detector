@@ -58,6 +58,8 @@ class LichessClient:
             "max": str(max_games),
             "perfType": speed,
             "rated": "1" if rated_only else "0",
+            # Required for %clk annotations, i.e. per-move thinking time.
+            "clocks": "true",
         }
         url = f"{self._base_url}/api/games/user/{username}"
         own_client = self._client is None

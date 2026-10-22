@@ -50,7 +50,7 @@ def test_ingest_streams_chunks_and_sends_export_filters() -> None:
     assert len(requests) == 1
     request = requests[0]
     assert str(request.url).endswith(
-        "/api/games/user/test_user?max=12&perfType=rapid&rated=1"
+        "/api/games/user/test_user?max=12&perfType=rapid&rated=1&clocks=true"
     )
     assert request.headers["Accept"] == "application/x-chess-pgn"
 
