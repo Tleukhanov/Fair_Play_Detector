@@ -9,7 +9,7 @@ class ExecutorCapacityError(RuntimeError):
     """Raised when the bounded executor cannot accept another scan."""
 
 
-ScanJob = Callable[[UUID], Awaitable[None]]
+ScanJob = Callable[[UUID], Awaitable[object]]
 
 
 class BackgroundScanExecutor:

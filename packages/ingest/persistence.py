@@ -25,7 +25,12 @@ class IngestResult:
 
 
 class LichessIngestService:
-    """Fetch and persist public games while avoiding per-user duplicates."""
+    """Fetch and persist public games as a per-scan snapshot.
+
+    A user may be scanned more than once; every scan keeps its own copy of the
+    fetched games.  Duplicates are therefore filtered within the current scan
+    only, never across scans of the same user.
+    """
 
     def __init__(self, client: LichessClient) -> None:
         self._client = client
@@ -56,7 +61,7 @@ class LichessIngestService:
             (
                 await session.scalars(
                     select(GameModel.lichess_game_id).where(
-                        GameModel.user_id == scan.user_id,
+                        GameModel.scan_id == scan.id,
                         GameModel.lichess_game_id.in_(game_ids),
                     )
                 )

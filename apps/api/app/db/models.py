@@ -14,6 +14,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    true,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -44,6 +45,9 @@ class ScanModel(Base):
     status: Mapped[str] = mapped_column(String(20), nullable=False)
     requested_time_control: Mapped[str] = mapped_column(String(20), nullable=False)
     requested_game_limit: Mapped[int] = mapped_column(Integer, nullable=False)
+    rated_only: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default=true(), nullable=False
+    )
     games_found: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     games_analyzed: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     model_version: Mapped[str | None] = mapped_column(String(100))
@@ -60,7 +64,7 @@ class ScanModel(Base):
 
 class GameModel(Base):
     __tablename__ = "games"
-    __table_args__ = (UniqueConstraint("lichess_game_id", "user_id"),)
+    __table_args__ = (UniqueConstraint("lichess_game_id", "scan_id"),)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
     lichess_game_id: Mapped[str] = mapped_column(String(20), nullable=False)
@@ -87,11 +91,11 @@ class GameModel(Base):
 
 class GameFeaturesModel(Base):
     __tablename__ = "game_features"
-    __table_args__ = (UniqueConstraint("cache_key"),)
+    __table_args__ = (UniqueConstraint("game_id", "cache_key"),)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
     game_id: Mapped[str] = mapped_column(ForeignKey("games.id"), nullable=False, index=True)
-    cache_key: Mapped[str] = mapped_column(String(128), nullable=False, unique=True, index=True)
+    cache_key: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
     pgn_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     feature_version: Mapped[str] = mapped_column(String(30), nullable=False)
     aggregates: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
@@ -105,6 +109,7 @@ class GameFeaturesModel(Base):
 
 class GameScoreModel(Base):
     __tablename__ = "game_scores"
+    __table_args__ = (UniqueConstraint("game_id", "model_version"),)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
     game_id: Mapped[str] = mapped_column(ForeignKey("games.id"), nullable=False, index=True)
