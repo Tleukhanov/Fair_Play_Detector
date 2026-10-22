@@ -21,6 +21,7 @@ from .feature_contract import (
     validate_player_disjoint,
 )
 from .protocols import Scorer
+from .scorer import TrainedScorer
 
 __all__ = [
     "BaselineScorer",
@@ -38,6 +39,7 @@ __all__ = [
     "Scorer",
     "ScoringInput",
     "TARGET_COLUMN",
+    "TrainedScorer",
     "validate_feature_columns",
     "validate_feature_values",
     "validate_player_disjoint",
