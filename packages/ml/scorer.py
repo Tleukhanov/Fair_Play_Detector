@@ -8,10 +8,14 @@ player into a single risk score.
 
 Aggregation is the **mean of game probabilities**, not the maximum: a single
 unusual game should not dominate a verdict, and the mean keeps the score
-interpretable as "expected share of flagged games".  The confidence interval is
-a deterministic percentile bootstrap over games (the only sampling unit
-available at serve time); it is not a substitute for the player-level bootstrap
-used during evaluation.
+interpretable as "expected share of flagged games".  Because the score lives on
+the player-mean scale, the verdict uses ``player_thresholds`` derived from
+per-player validation means (mean + 1/2 population std).  ``metadata.thresholds``
+remains the per-game FPR contract and is only a fallback for older artifacts
+that predate ``player_thresholds``.  The confidence interval is a deterministic
+percentile bootstrap over games (the only sampling unit available at serve
+time); it is not a substitute for the player-level bootstrap used during
+evaluation.
 
 Explanations are strictly grounded: evidence values are the player's mean of a
 feature, baselines are the training means, and weights are the artifact's global
@@ -32,6 +36,7 @@ from .baseline import BaselineScorer, InsufficientGamesError
 from .contracts import (
     FeatureEvidence,
     ModelMetadata,
+    RiskThresholds,
     ScoreResult,
     ScoringInput,
 )
@@ -95,12 +100,16 @@ class TrainedScorer:
         feature_importances: Sequence[tuple[str, float]],
         feature_baselines: dict[str, float],
         artifact_metadata: dict[str, Any],
+        player_thresholds: RiskThresholds | None = None,
     ) -> None:
         self._model = model
         self._metadata = metadata
         self._feature_importances = list(feature_importances)
         self._feature_baselines = dict(feature_baselines)
         self._artifact_metadata = dict(artifact_metadata)
+        #: Verdict thresholds on the player-mean scale.  Falls back to the
+        #: per-game contract only for artifacts predating player thresholds.
+        self._player_thresholds = player_thresholds or metadata.thresholds
 
     @classmethod
     def load(cls, model_dir: str | Path) -> TrainedScorer:
@@ -154,6 +163,7 @@ class TrainedScorer:
                 raise ValueError(f"missing numeric feature baseline for {name!r}")
             baselines[name] = float(value)
 
+        player_thresholds = _player_thresholds(payload, metadata)
         model = joblib.load(model_path)
         return cls(
             model,
@@ -161,11 +171,18 @@ class TrainedScorer:
             feature_importances=importances,
             feature_baselines=baselines,
             artifact_metadata=payload,
+            player_thresholds=player_thresholds,
         )
 
     @property
     def metadata(self) -> ModelMetadata:
         return self._metadata
+
+    @property
+    def player_thresholds(self) -> RiskThresholds:
+        """Thresholds actually used for ``risk_level`` (player-mean scale)."""
+
+        return self._player_thresholds
 
     @property
     def artifact_metadata(self) -> dict[str, Any]:
@@ -201,7 +218,7 @@ class TrainedScorer:
         upper = _clamp(max(upper, risk_score))
 
         return ScoreResult(
-            risk_level=_risk_level(risk_score, self._metadata),
+            risk_level=_risk_level(risk_score, self._player_thresholds),
             risk_score=risk_score,
             confidence_interval=(lower, upper),
             games_analyzed=len(usable_games),
@@ -254,10 +271,31 @@ class TrainedScorer:
         return evidence
 
 
-def _risk_level(score: float, metadata: ModelMetadata) -> str:
-    if score >= metadata.thresholds.high_risk:
+def _player_thresholds(
+    payload: dict[str, Any], metadata: ModelMetadata
+) -> RiskThresholds:
+    """Read ``player_thresholds`` from the artifact, else use per-game thresholds."""
+
+    raw = payload.get("player_thresholds")
+    if raw is None:
+        return metadata.thresholds
+    if not isinstance(raw, dict):
+        raise ValueError("player_thresholds must be a JSON object")
+    missing = [
+        key for key in ("suspicious", "high_risk") if key not in raw
+    ]
+    if missing:
+        raise ValueError(f"player_thresholds is missing keys: {missing}")
+    return RiskThresholds(
+        suspicious=raw["suspicious"],
+        high_risk=raw["high_risk"],
+    )
+
+
+def _risk_level(score: float, thresholds: RiskThresholds) -> str:
+    if score >= thresholds.high_risk:
         return "high_risk"
-    if score >= metadata.thresholds.suspicious:
+    if score >= thresholds.suspicious:
         return "suspicious"
     return "low_risk"
 

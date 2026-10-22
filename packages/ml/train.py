@@ -379,6 +379,102 @@ def serving_thresholds(
     }
 
 
+def _clip_unit(value: float) -> float:
+    return min(1.0, max(0.0, value))
+
+
+def player_level_thresholds(
+    valid_probabilities: np.ndarray,
+    valid_groups: np.ndarray,
+    *,
+    z_suspicious: float = 1.0,
+    z_high_risk: float = 2.0,
+) -> dict[str, Any]:
+    """Derive verdict thresholds from *player mean* validation probabilities.
+
+    The serving score is the mean game probability for one player, so the
+    operating thresholds must live on the same scale.  Per-game thresholds
+    (e.g. 0.74) are unreachable by a 20-game player mean and would flag nobody.
+
+    The reference distribution is the set of validation players' mean
+    probabilities.  ``std`` is the **population** standard deviation
+    (``ddof=0``): the validation players are the complete reference cohort, not
+    a sample used to estimate a wider population.  Thresholds are
+    ``clip(mean + 1*std)`` and ``clip(mean + 2*std)``.
+    """
+
+    frame = pd.DataFrame(
+        {
+            "player_id": np.asarray(valid_groups, dtype=object),
+            "probability": np.asarray(valid_probabilities, dtype=float),
+        }
+    )
+    player_means = frame.groupby("player_id")["probability"].mean()
+    mean = float(player_means.mean())
+    std = float(player_means.std(ddof=0))
+    suspicious = _clip_unit(mean + z_suspicious * std)
+    high_risk = _clip_unit(mean + z_high_risk * std)
+    adjusted = False
+    if high_risk <= suspicious:
+        high_risk = _clip_unit(suspicious + 1e-6)
+        if high_risk <= suspicious:
+            suspicious = max(0.0, high_risk - 1e-6)
+        adjusted = True
+    return {
+        "suspicious": suspicious,
+        "high_risk": high_risk,
+        "derivation": (
+            "player_suspicious = clip(mean + 1*std, 0, 1); "
+            "player_high_risk = clip(mean + 2*std, 0, 1); "
+            "mean/std are over per-player mean game probabilities on the "
+            "player-disjoint validation split; std is the population std (ddof=0)"
+        ),
+        "validation_player_mean": mean,
+        "validation_player_std": std,
+        "validation_players": int(len(player_means)),
+        "adjusted_for_ordering": adjusted,
+        "note": "small-N; recalibrate on a larger cohort",
+    }
+
+
+def player_risk_levels(
+    probabilities: np.ndarray,
+    groups: np.ndarray,
+    thresholds: Mapping[str, float],
+) -> dict[str, Any]:
+    """Aggregate game probabilities per player and report the verdict mix."""
+
+    frame = pd.DataFrame(
+        {
+            "player_id": np.asarray(groups, dtype=object),
+            "probability": np.asarray(probabilities, dtype=float),
+        }
+    )
+    player_means = frame.groupby("player_id")["probability"].mean()
+    suspicious = float(thresholds["suspicious"])
+    high_risk = float(thresholds["high_risk"])
+    counts = {"low_risk": 0, "suspicious": 0, "high_risk": 0}
+    players: dict[str, dict[str, float | str]] = {}
+    for player_id, value in player_means.items():
+        score = float(value)
+        if score >= high_risk:
+            level = "high_risk"
+        elif score >= suspicious:
+            level = "suspicious"
+        else:
+            level = "low_risk"
+        counts[level] += 1
+        players[str(player_id)] = {
+            "mean_probability": score,
+            "risk_level": level,
+        }
+    return {
+        "players": int(len(player_means)),
+        "counts": counts,
+        "player_scores": players,
+    }
+
+
 def calibration_points(
     probabilities: np.ndarray, labels: np.ndarray, *, n_bins: int = 10
 ) -> list[dict[str, float]]:
@@ -901,6 +997,9 @@ def train(
     serving_validation = validation_probabilities[SERVING_MODEL]
     serving_test = test_probabilities[SERVING_MODEL]
     thresholds = serving_thresholds(serving_validation, labels[valid_index])
+    player_thresholds = player_level_thresholds(
+        serving_validation, groups[valid_index]
+    )
     threshold_map = {
         "fpr_1pct": float(thresholds["high_risk"]),
         "fpr_5pct": float(thresholds["suspicious"]),
@@ -1008,6 +1107,17 @@ def train(
             "suspicious": float(thresholds["suspicious"]),
             "high_risk": float(thresholds["high_risk"]),
         },
+        "player_thresholds": player_thresholds,
+        "threshold_semantics": {
+            "thresholds": (
+                "per-game calibrated probability thresholds selected on validation "
+                "at target FPR 1%/5%; kept for reference and reporting only"
+            ),
+            "player_thresholds": (
+                "player-mean probability thresholds used by TrainedScorer for "
+                "risk_level"
+            ),
+        },
         "threshold_selection": {
             key: value
             for key, value in thresholds.items()
@@ -1077,6 +1187,16 @@ def train(
         },
         "thresholds": metadata["thresholds"],
         "threshold_selection": metadata["threshold_selection"],
+        "player_thresholds": player_thresholds,
+        "player_level_evaluation": {
+            "thresholds": player_thresholds,
+            "validation": player_risk_levels(
+                serving_validation, groups[valid_index], player_thresholds
+            ),
+            "test": player_risk_levels(
+                serving_test, groups[test_index], player_thresholds
+            ),
+        },
         "baselines": {
             "heuristics": baselines,
             "baseline_scorer_player_level": baseline_scorer,
@@ -1146,6 +1266,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         "dataset_hash": report["dataset_hash"],
         "split": report["split"]["counts"],
         "test": report["test"]["metrics"],
+        "player_thresholds": report["player_thresholds"],
+        "player_level_evaluation": {
+            split: payload["counts"]
+            for split, payload in report["player_level_evaluation"].items()
+            if isinstance(payload, dict) and "counts" in payload
+        },
         "baselines": report["baselines"],
         "adds_value": report["adds_value"],
         "output_dir": str(args.output_dir),
