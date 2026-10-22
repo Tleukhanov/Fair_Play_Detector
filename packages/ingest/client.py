@@ -10,6 +10,11 @@ import httpx
 from .username import normalize_username
 
 
+#: Lichess rejects the default httpx user agent with HTTP 404.  A descriptive
+#: agent (and the public project URL as contact) is required for API access.
+USER_AGENT = "fair-play-detector/0.1 (+https://github.com/Tleukhanov/Fair_Play_Detector)"
+
+
 class LichessClientError(RuntimeError):
     """Raised when Lichess cannot provide a valid export response."""
 
@@ -28,14 +33,18 @@ class LichessClient:
         timeout_seconds: float = 30.0,
         max_retries: int = 3,
         backoff_seconds: float = 1.0,
+        user_agent: str = USER_AGENT,
         client: httpx.AsyncClient | None = None,
     ) -> None:
         if max_retries < 0:
             raise ValueError("max_retries must be non-negative")
+        if not user_agent.strip():
+            raise ValueError("user_agent must not be empty")
         self._base_url = base_url.rstrip("/")
         self._timeout = httpx.Timeout(timeout_seconds)
         self._max_retries = max_retries
         self._backoff_seconds = backoff_seconds
+        self._user_agent = user_agent
         self._client = client
 
     async def iter_pgn_chunks(
@@ -71,7 +80,10 @@ class LichessClient:
                         "GET",
                         url,
                         params=params,
-                        headers={"Accept": "application/x-chess-pgn"},
+                        headers={
+                            "Accept": "application/x-chess-pgn",
+                            "User-Agent": self._user_agent,
+                        },
                     ) as response:
                         if response.status_code == 429:
                             if attempt >= self._max_retries:

@@ -53,6 +53,9 @@ def test_ingest_streams_chunks_and_sends_export_filters() -> None:
         "/api/games/user/test_user?max=12&perfType=rapid&rated=1&clocks=true"
     )
     assert request.headers["Accept"] == "application/x-chess-pgn"
+    # Lichess returns 404 for the default httpx user agent; a descriptive one is
+    # required for live API access.
+    assert request.headers["User-Agent"].startswith("fair-play-detector/")
 
 
 def test_ingest_retries_rate_limit_and_honors_retry_after() -> None:
