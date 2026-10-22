@@ -117,4 +117,4 @@ class LichessClient:
                         return max(0.0, parsedate_to_datetime(retry_after).timestamp() - time())
                     except (TypeError, ValueError, OverflowError):
                         pass
-        return 2**attempt
+        return float(2**attempt)

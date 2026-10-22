@@ -47,9 +47,44 @@ target-version = "py311"
 select = ["E", "F", "I", "UP"]
 
 [tool.mypy]
-python_version = "3.11"
+# The dev venv and CI run Python 3.12; numpy 2.x ships stubs that use the
+# `type` statement, which mypy cannot parse when targeting 3.11.
+python_version = "3.12"
 strict = true
 files = ["apps", "packages"]
+
+# Third-party modules without a py.typed marker or bundled stubs. First-party
+# code stays under `strict = true`.
+[[tool.mypy.overrides]]
+module = [
+  "joblib",
+  "joblib.*",
+  "pandas",
+  "pandas.*",
+  "pyarrow",
+  "pyarrow.*",
+  "scipy",
+  "scipy.*",
+  "sklearn",
+  "sklearn.*",
+  "xgboost",
+  "xgboost.*",
+]
+ignore_missing_imports = true
+
+# Those modules already carry per-line `# type: ignore[import-untyped]` comments.
+# With the overrides above those comments are redundant, but touching them is
+# owned by the ML/API branches, so tolerate the redundant ignores there only.
+[[tool.mypy.overrides]]
+module = [
+  "packages.ml.data",
+  "packages.ml.features",
+  "packages.ml.game_features",
+  "packages.ml.scorer",
+  "packages.ml.train",
+  "apps.api.app.workers.scoring_factory",
+]
+disable_error_code = ["unused-ignore"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

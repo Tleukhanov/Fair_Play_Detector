@@ -2,17 +2,18 @@
 
 import asyncio
 import math
+import os
 import shutil
 
 import pytest
 
 from packages.chess_analysis import MoveAnalysis, StockfishEngine, aggregate_game_features
 
-STOCKFISH = shutil.which("stockfish") or "/home/yeraly/.local/bin/stockfish"
+STOCKFISH = os.environ.get("STOCKFISH_PATH") or shutil.which("stockfish")
 
 pytestmark = pytest.mark.skipif(
-    shutil.which("stockfish") is None,
-    reason="stockfish binary is not installed",
+    STOCKFISH is None,
+    reason="stockfish binary is not available (install stockfish or set STOCKFISH_PATH)",
 )
 
 DEPTH = 6
