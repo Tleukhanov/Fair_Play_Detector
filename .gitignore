@@ -10,5 +10,6 @@ build/
 *.egg-info/
 data/models/
 data/processed/
+data_raw/
 FAIR_PLAY_DETECTOR_PLAN.md
 Games.csv
