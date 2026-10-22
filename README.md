@@ -1,10 +1,12 @@
 # Fair Play Detector
 
-Сервис вероятностного анализа публичных партий Lichess на признаки машиноподобной игры.
+Сервис вероятностного анализа публичных партий Lichess на признаки
+машиноподобной игры.
 
-**Важно о позиционировании:** результат — это статистический сигнал для дополнительной проверки,
-а **не** доказательство читерства и не основание для автомодерации. Так зафиксировано в коде
-(`packages/llm/fallback.py`), в API-контрактах и в дисклеймерах.
+**Важно о позиционировании:** результат — это статистический сигнал для
+дополнительной проверки, а **не** доказательство читерства и не основание для
+автомодерации. Так зафиксировано в API-контрактах, в дисклеймерах и в
+`packages/llm/fallback.py`.
 
 ---
 
@@ -12,151 +14,248 @@
 
 | Слой | Состояние | Файлы |
 |---|---|---|
-| **Схема БД** | ✅ 6 таблиц, 4 миграции Alembic | `apps/api/app/db/models.py`, `migrations/` |
-| **API сканирования** | ✅ 5 эндпоинтов, валидация, 202/409/503 | `apps/api/app/api/routes.py` |
-| **Оркестрация** | ✅ state machine + lease-защита от двойного захвата | `apps/api/app/workers/state_machine.py`, `store.py`, `service.py` |
-| **Фоновый исполнитель** | ✅ лимиты: 2 параллельно, 20 в очереди | `apps/api/app/workers/executor.py` |
-| **Ingest Lichess** | ✅ стриминг PGN, retry с `Retry-After`, дедупликация | `packages/ingest/` |
-| **Адаптер Stockfish** | ✅ написан, **не подключён** | `packages/chess_analysis/stockfish.py` |
-| **Сбор датасета** | ✅ гейт 5 GiB, Parquet, отчёт | `packages/dataset/` |
-| **Обучение ML** | ✅ 2 модели, калибровка, антипротечка | `packages/ml/` |
+| **Схема БД** | ✅ 6 таблиц, 5 миграций Alembic | `apps/api/app/db/models.py`, `migrations/` |
+| **API сканирования** | ✅ 5 эндпоинтов, валидация, 202/404/409/503 | `apps/api/app/api/routes.py` |
+| **Оркестрация** | ✅ state machine + lease + stale-scan reaper | `apps/api/app/workers/state_machine.py`, `store.py`, `service.py` |
+| **Фоновый исполнитель** | ✅ 2 параллельно, 20 в очереди | `apps/api/app/workers/executor.py` |
+| **Ingest Lichess** | ✅ стриминг PGN, retry, часы (`clocks=true`), per-scan snapshot | `packages/ingest/` |
+| **Stockfish-адаптер** | ✅ подключён, CPL в POV ходящего, клип мата, часы, depth-1/9/15 | `packages/chess_analysis/` |
+| **Анализ + скоринг** | ✅ `ChessAnalysisStage` + `ScoringStage` подключены | `apps/api/app/workers/analysis_stages.py` |
+| **ML-модель** | ✅ обучена на ChessFraud, артефакт + `TrainedScorer` | `packages/ml/train.py`, `scorer.py` |
 | **LLM-слой** | ⚠️ только детерминированный fallback | `packages/llm/` |
+| **Frontend** | ❌ отсутствует | — |
+| **Maia** | ❌ не подключена (не входит в inference) | — |
 
-Проверено: **17/17 тестов проходят**, `ruff` чистый.
+Проверки в локальном окружении: `pytest` (см. раздел 8), `ruff` чистый,
+`mypy` — см. актуальный вывод в CI/локально.
 
 ---
 
-## 2. Что НЕ работает (заглушки) — читать обязательно
+## 2. Данные: только ChessFraud
 
-### 2.1 Анализ и скоринг не подключены 🔴
+`Games.csv` (Kaggle «Spotting Cheaters») **не используется**: это синтетические
+игры ботов Maia vs Stockfish, без реальных людей и без часов. Он не даёт
+переносимости на реальных игроков.
 
-`apps/api/app/workers/default_stages.py` отдаёт **реальную** стадию только для скачивания:
+Используются две конфигурации
+[`artemlepin/chess-fraud`](https://huggingface.co/datasets/artemlepin/chess-fraud)
+(CC BY 4.0):
 
-```python
-local_scan_stages(...) → (LichessFetchStage, LocalNoOpStage, LocalNoOpStage, LocalNoOpStage)
+| Конфиг | Роль | Строк | `is_used` | Игроков | Игр |
+|---|---|---:|---:|---:|---:|
+| `chess_fraud/full` | реальный контролируемый турнир, **обучение и оценка** | 38 510 | 28 410 | 49 | 1 010 player-games |
+| `chess_fraud_synth/train` | синтетика для будущих экспериментов | 860 183 | 334 140 | 960 | 9 600 |
+| `chess_fraud_synth/test` | player-disjoint тест синтетики | 214 104 | 83 067 | 240 | 2 400 |
+
+Факты по `chess_fraud`:
+
+- 505 партий, 1 010 player-side игр, 49 игроков, контроль `300+0`;
+- 40.3% player-games с подсказками, 24.4% ходов с подсказками;
+- evals/CPL/normalized CPL/часы/Maia-2/Allie уже посчитаны (Stockfish 17, depth 15);
+- метка `is_cheating_move` — ход следует за показанной линией Stockfish;
+  `is_cheating_player_game` — в игре была такая серия.
+
+Данные **не коммитятся**. Загрузка:
+
+```bash
+python scripts/download_chessfraud.py \
+  --output-dir /home/yeraly/Data/fair_play/chessfraud
 ```
 
-При этом `ChessAnalysisStage` и `ScoringStage` в `analysis_stages.py` **написаны, но не вызваны нигде**.
+Скрипт пинует revision HuggingFace, считает sha256 и пишет `manifest.json`.
+Читать данные можно через `FAIR_PLAY_DATA_DIR`:
 
-**Последствие:** сканирование скачает партии и на этом остановится. Таблицы `game_features`,
-`game_scores`, `verdicts` останутся пустыми, а `GET /verdict` будет отдавать **409**, а не 200.
-
-**Как чинить:** в `default_stages.py` заменить три `LocalNoOpStage` на `ChessAnalysisStage`
-и `ScoringStage`, создав `StockfishEngine` в `_create_scan_job()` (`apps/api/app/main.py:20-28`).
-
-### 2.2 API возвращает нули вместо данных 🔴
-
-`_game_to_dto()` (`routes.py:190-202`) жёстко возврачает `move_count=0`,
-`top_move_match_rate=0.0`, `mean_centipawn_loss=0.0`, `maia_divergence=0.0`,
-а `GET .../games/{game_id}` отдаёт `moves=[]` — **хотя колонки в БД есть**.
-Нужно подтягивать `GameScoreModel` и `GameFeaturesModel`.
-
-### 2.3 Время на ход не извлекается 🟡
-
-`StockfishEngine` не парсит clocks из PGN, поэтому `MoveAnalysis.time_seconds` всегда `None`,
-а значит `identical_time_share`, `median_time_seconds`, `time_variance` — пустые.
-Это **20% веса** baseline-формулы (`REGULAR_MOVE_TIMES`) и один из 4 признаков для ML.
-
-### 2.4 Maia не подключена 🟡
-
-Поля `maia_eval`, `maia_move_probability`, `maia_divergence` всегда `None`,
-поэтому `maia_divergence` в признаках пуст, а его 15% веса в baseline дают ноль.
-
-### 2.5 Сборщик датасета не считает поведенческие признаки 🔴
-
-`packages/dataset/collector.py::_to_feature_row` оставляет `mean_cpl`, `top1_match_rate`,
-`top3_match_rate`, `mean_move_time_ms` пустыми — он не гоняет Stockfish по собранным партиям.
-
-**Последствие:** `packages/ml/cli.py` на этих данных **падает** с
-`ValueError: behavioral features are incomplete; run Stockfish analysis before training`.
-Это **задуманное поведение** (fail-closed), а не поломка: обучение на неполных признаках
-должно быть невозможно.
-
-### 2.6 Прочее
-
-- `ScanPipeline` (`workers/pipeline.py`) не используется — прод-путь идёт через `ScanWorker`
-- Репозитории-протоколы (`domain/repositories.py`) объявлены, реализаций нет
-- `rated_only` из запроса игнорируется (всегда `True`)
-- `current_stage` в статусе — копия `status`, отдельного поля нет
-- `difficult_position_match_rate` = `top_1_rate` (заглушка)
-- `REDIS_URL` объявлен, но не используется; воркеры не переживают рестарт процесса
-- Frontend отсутствует
+```bash
+export FAIR_PLAY_DATA_DIR=/home/yeraly/Data/fair_play/chessfraud
+```
 
 ---
 
-## 3. Почему метрики ML 0.999 — это брак, а не победа
+## 3. Фичи и антиутечка
 
-В `FAIR_PLAY_DETECTOR_ML_REPORT.md` зафиксирован ROC-AUC **0.99933** на 350k строк.
-Это не точность модели, а утечка: первый датасет (Lichess Elite vs TCEC) различался
-по метаданным источника, а не по стилю игры. Пришлось выкинуть фичи `rated`, `speed`,
-`result`, `move_count`.
+Контракт фич — `packages/ml/feature_contract.py` (12 колонок, версия `2.0.0`):
 
-Агент починил это в коммите `a899408 fix(ml): reject source leakage in training gate` —
-теперь обучение **fail-closed** отказывается на:
-- строках вне `move_count` 30..80 или чужом `speed`
-- данных без PGN-колонки
-- классах с покрытием поведенческих признаков < 95%
+```
+centipawn_loss, normalized_centipawn_loss,
+match_sf1, match_sf9, match_sf15,
+eval_swing, abs_eval, phase,
+move_thinking_time, time_ratio,
+player_elo_centered, opponent_elo_centered
+```
 
-**Правило, которое стоит запомнить:** результат 0.99+ на первой попытке = ищи лик,
-а не празднуй.
+Правила, которые проверяются кодом (fail-closed):
 
----
-
-## 4. Новый датасет `Games.csv` (48k партий) — ещё не подключён
-
-Локально лежит `Games.csv` (27 МБ, в git не добавлен):
-
-| Колонка | Смысл |
-|---|---|
-| `Game` | партия в нотации |
-| `Liste cheat white` / `black` | битовая маска помеченных ходов |
-| `Elo White` / `Elo Black` | рейтинги |
-| `Score` | результат |
-
-~40% партий с метками, ~19% полностью чистых. Это **настоящая разметка per-move**
-вместо прокси-классификации «источник данных».
-
-**Что нужно сделать:** парсер нотации → FEN, маски → per-move метки, признаки через Stockfish.
-Задача формулируется как «этот ход сыгран человеком или движком», метрики —
-precision/recall по помеченным ходам. **Время на ход недоступно — исключить из MVP.**
+- **Split только по игроку**, никогда по строкам.
+- **Чёрный список** меток/идентичностей/сырых значений: `is_cheating_*`,
+  `player_hint_shown`, `assistance_*`, `move_player`, `position_*`, `game_id`,
+  `player_id`, `move_stockfish_*`, `player_elo`, `eval_*`, `half_move` и т.д.
+  Если такая колонка попала в матрицу — обучение падает.
+- **Elo только как нормализатор** (`player_elo_centered`), не как сырая фича,
+  чтобы модель не выучила «кто в когорте читерит».
+- **Дебют отсекается** (`half_move >= 21`), как в ChessFraud.
+- **Никакой сырой доски/ходов** в модели: FEN/UCI используются только для
+  расчёта `match_*` и CPL.
+- **Parity training/serve**: один модуль `packages/ml/features.py` и один
+  `aggregate_game_features`; на serve-пути те же формулы, что в parquet.
 
 ---
 
-## 5. Структура репозитория
+## 4. Модель и честные метрики
+
+**Serving-модель — game-level** (не per-move): она принимает агрегаты одной
+player-side игры и предсказывает вероятность «в этой игре была подсказка».
+Player-level риск — среднее по играм скана + bootstrap-CI.
+
+Почему не per-move в проде: текущий `ScoringStage`/`ScoringInput` работает с
+агрегатами `GameAggregateFeatures`; per-move модель требует расширения схемы и
+протаскивания вероятностей по каждому ходу. Per-move модель обучена и лежит в
+отчёте как research-артефакт, но в serving не подключена.
+
+**Данные:** `chess_fraud/full`, 1 010 player-games, 49 игроков, prevalence 40.3%.
+**Split:** player-disjoint 60/20/20 (seed 2025), 610 / 202 / 198 игр,
+29 / 10 / 10 игроков.
+
+**Модель:** XGBoost (300 деревьев, depth 4), сигмоидная калибровка на
+validation, артефакт `data/models/chessfraud-v1`.
+
+**Test (198 игр, 82 positive, prevalence 41.4%):**
+
+| Метрика | Значение | Player-bootstrap 95% CI |
+|---|---:|---|
+| ROC-AUC | **0.7303** | 0.6454–0.8130 |
+| PR-AUC | **0.7187** | 0.6327–0.8270 |
+| Brier | **0.2005** | 0.1755–0.2294 |
+| Recall @ FPR 1% | **0.1098** | 0.0588–0.1769 |
+| Recall @ FPR 5% | **0.1707** | 0.1000–0.2746 |
+
+Пороги выбраны только на validation:
+`suspicious = 0.7428` (FPR 5%), `high_risk = 0.7764` (FPR 1%).
+
+**Baselines (test):**
+
+| Score | ROC-AUC | PR-AUC | Recall @5% FPR |
+|---|---:|---:|---:|
+| `top_1_match_rate` | 0.7265 | 0.6874 | 0.1098 |
+| inverse mean CPL | 0.5299 | 0.4235 | 0.0122 |
+| `BaselineScorer` (player-level, 10 игроков) | 0.5833 | — | — |
+| Trained model (player-level, те же 10) | 0.7500 | — | — |
+
+**Честный вывод:** преимущество над простой эвристикой `top_1_match_rate`
+**не доказано**: paired player-bootstrap `AUC(model) − AUC(top1) = −0.00013`,
+CI `[−0.0598, +0.0556]`. То есть модель пока не лучше «доли совпадений с top-1»
+на этой когорте. Числа `precision` при prevalence 40% **не переносятся** на
+реальный трафик (<1%); сопоставимая величина — recall при фиксированном FPR.
+
+**Per-move research** (GroupKFold 3 by player, 28 410 строк): OOF ROC-AUC
+**0.6639**, PR-AUC **0.4262**. В serving не подключена.
+
+---
+
+## 5. Как устроен скан
+
+```
+POST /api/v1/scans
+  -> queued
+  -> fetching   Lichess PGN (clocks=true) -> games (per-scan snapshot)
+  -> analyzing  Stockfish: mover-POV CPL, top1 depth 1/9/15, часы, forced/noisy
+  -> scoring    TrainedScorer (или BaselineScorer, если артефакта нет)
+  -> explaining deterministic fallback
+  -> completed  verdict + per-game scores + moves
+```
+
+Особенности:
+
+- партии хранятся **per-scan** (`UNIQUE(lichess_game_id, scan_id)`), повторный
+  скан того же игрока не теряет игры;
+- кэш фич по `cache_key` переиспользует анализ и копирует его в строку текущей
+  игры;
+- `game_scores` уникальны по `(game_id, model_version)`, re-score идемпотентен;
+- зависшие сканы старше `STALE_SCAN_MINUTES` переводятся в `failed` на старте;
+- `rated_only` доезжает до Lichess API.
+
+---
+
+## 6. Что НЕ работает / ограничения
+
+- **Per-move модель не в serving.** В проде game-level; per-move — research.
+- **Maia/Allie не подключены** к inference: `maia_divergence` всегда `None`,
+  поля DTO это допускают.
+- **Маленькая когорта:** 49 игроков, test 10 игроков / 198 игр; широкие CI,
+  split чувствителен к seed.
+- **Нет доказанного прироста** над эвристикой top-1 на этой выборке.
+- **Prevalence 40%** в ChessFraud; precision нельзя переносить на реальный
+  трафик.
+- **Одна ошибка движка валит весь scan** (`ANALYSIS_FAILED`); per-game isolation
+  не сделана.
+- **LLM-провайдер не подключён** — только deterministic fallback.
+- **Frontend отсутствует.**
+- **Нет auth/rate-limit/retention** на публичном API; перед публикацией нужен
+  security/privacy review.
+- `ScanPipeline` (`workers/pipeline.py`) не используется — прод-путь идёт через
+  `ScanWorker`.
+- Репозитории-протоколы (`domain/repositories.py`) без реализаций.
+
+---
+
+## 7. Структура репозитория
 
 ```
 apps/api/app/          FastAPI: роуты, модели БД, воркеры
 packages/
-  ingest/              клиент Lichess, парсинг PGN, персистентность
-  chess_analysis/      адаптер Stockfish + агрегация признаков
-  feature_engineering/ версионированный контракт признаков
-  dataset/             сбор датасета (Parquet) + гейт + отчёт
-  ml/                  обучение, baseline-скорер, калибровка
-  llm/                 контракты объяснений + детерминированный fallback
-migrations/            Alembic: 0001…0004
-tests/                 6 файлов, 17 тестов
+  ingest/              клиент Lichess, PGN, персистентность
+  chess_analysis/      Stockfish + агрегация признаков
+  feature_engineering/ контракт GameAggregateFeatures
+  ml/                  feature contract, data loader, features, train, scorer
+  dataset/             старый bounded collector (Lichess Elite/TCEC; не используется)
+  llm/                 контракты объяснений + deterministic fallback
+scripts/               download_chessfraud.py
+migrations/            Alembic 0001…0005
+tests/                 pytest
+data/models/           артефакты (gitignored)
+data_raw/              сырые parquet (gitignored)
 ```
 
-**6 таблиц БД:** `users`, `scans`, `games`, `game_features`, `game_scores`, `verdicts`.
-Уникальность `games` — по `(lichess_game_id, user_id)`, у `game_features` — по `cache_key`,
-у `verdicts` — по `scan_id`.
-
-**State machine скана:**
-`queued → fetching → analyzing → scoring → explaining → completed`, в `failed` можно уйти
-из любого нетерминального состояния. Захват скана атомарный (`lease_id`), двойной захват невозможен.
+**6 таблиц:** `users`, `scans`, `games`, `game_features`, `game_scores`,
+`verdicts`. State machine:
+`queued → fetching → analyzing → scoring → explaining → completed`,
+в `failed` можно уйти из любого нетерминального состояния.
 
 ---
 
-## 6. Как запустить
+## 8. Как запустить
 
 ```bash
-python -m pip install -e ".[dev]"
-cp .env.example .env            # Windows: Copy-Item .env.example .env
+python -m pip install -e ".[dev,dataset,ml]"
+cp .env.example .env
 alembic upgrade head
 uvicorn apps.api.app.main:app --reload
 ```
 
+Нужен Stockfish. Путь задаётся `STOCKFISH_PATH` (по умолчанию
+`/usr/games/stockfish`, иначе `stockfish` из `PATH`):
+
+```bash
+which stockfish        # /home/yeraly/.local/bin/stockfish
+export STOCKFISH_PATH=$(which stockfish)
+```
+
 Проверка: `GET /health` → `{"status": "ok"}`, Swagger на `/docs`.
+
+### Данные и обучение
+
+```bash
+python scripts/download_chessfraud.py \
+  --output-dir /home/yeraly/Data/fair_play/chessfraud
+
+export FAIR_PLAY_DATA_DIR=/home/yeraly/Data/fair_play/chessfraud
+python -m packages.ml.train \
+  --data-dir "$FAIR_PLAY_DATA_DIR" \
+  --output-dir data/models/chessfraud-v1
+```
+
+`MODEL_DIR` (по умолчанию `data/models/chessfraud-v1`) подхватывается API:
+если `metadata.json` есть — используется `TrainedScorer`, иначе
+`BaselineScorer`.
 
 ### Эндпоинты
 
@@ -165,75 +264,53 @@ uvicorn apps.api.app.main:app --reload
 | `POST` | `/api/v1/scans` | Запустить сканирование → `202` + `scan_id`, либо `503 QUEUE_FULL` |
 | `GET` | `/api/v1/scans/{id}` | Прогресс: статус, найдено/проанализировано, ошибка |
 | `GET` | `/api/v1/scans/{id}/verdict` | Вердикт (или `409`, пока не `completed`) |
-| `GET` | `/api/v1/scans/{id}/games` | Партии постранично |
-| `GET` | `/api/v1/scans/{id}/games/{game_id}` | Детали игры (⚠️ сейчас заглушка) |
+| `GET` | `/api/v1/scans/{id}/games` | Партии постранично, с реальными агрегатами |
+| `GET` | `/api/v1/scans/{id}/games/{game_id}` | Детали игры + moves |
 
-Ограничения запроса: ник 1–30 символов, `max_games` 10–50, только `blitz|rapid`, только рейтинговые.
-
-### Сбор датасета
-
-```bash
-python -m pip install -e ".[dataset]"
-python -m packages.dataset.cli \
-  --lichess-elite-month 2025-01 \
-  --tcec-season 2024 \
-  --output-dir data/processed
-```
-
-Оба периода **обязательны** — без них команда падает до сетевого запроса.
-Лимит **5 GiB** на оба источника, при превышении — `DATASET_QUOTA_EXCEEDED`.
-Команда **никогда не запускает обучение**: останавливается и ждёт подтверждения отчёта.
-
-### Обучение
-
-```bash
-python -m pip install -e ".[ml]"
-python -m packages.ml.cli \
-  --input-dir data/processed \
-  --report data/models/ml_training_report.json \
-  --speed rapid
-```
-
-Модели: Logistic Regression (интерпретируемая) + XGBoost, обе с сигмоидной калибровкой.
-Пороги подбираются на validation по максимуму `precision × recall`.
-Метрики: ROC-AUC, PR-AUC, recall при FPR ≤ 1%, precision на `high_risk`, Brier score.
+Ограничения запроса: ник 1–30 символов, `max_games` 10–50, только
+`blitz|rapid`, `rated_only` учитывается.
 
 ### Тесты и линтеры
 
 ```bash
-python -m pytest -q                          # 17 passed
-python -m ruff check apps packages tests     # All checks passed!
-python -m mypy                               # strict = true
+python -m pytest -q                          # см. актуальный вывод
+python -m ruff check apps packages tests scripts
+python -m mypy
 ```
 
-> ⚠️ Закоммиченный `.venv` **нерабочий** — нет `httpx`, `python-chess`, `pyarrow`, `xgboost`.
-> Тесты проходят только в системном Python 3.14. Пересоздай окружение при необходимости.
+Stockfish-тесты пропускаются, если бинарь не найден.
+
+> ⚠️ В репозитории нет `.venv`; используй локальное окружение Python 3.12+
+> с `.[dev,dataset,ml]`. Системный Python без зависимостей тесты не запустит.
 
 ---
 
-## 7. Бэклог по приоритету
+## 9. Бэклог по приоритету
 
-1. **Подключить `ChessAnalysisStage` и `ScoringStage`** — без этого сканирование не даёт вердикта
-2. **Подключить `StockfishEngine`** в `_create_scan_job()`, починить `_game_to_dto`
-3. **Извлечь время на ход** из PGN (clocks) — вернёт 20% веса baseline
-4. **Переориентировать датасет на `Games.csv`** — настоящая per-move разметка
-5. **Подключить LLM-провайдера** (Gemini Flash) вместо детерминированного fallback
-6. **Maia** — восстановить `maia_divergence` (или убрать из модели)
-7. Alembic-реализации репозиториев, вынести `REDIS_URL` в Phase 2
+1. **Per-move serving**: протащить вероятность по каждому ходу в
+   `GameAggregateFeatures` и `ScoringStage`; оценить, даёт ли это прирост.
+2. **Maia-2 на Elo игрока** как human-aligned сигнал (сейчас `maia_divergence`
+   пуст).
+3. **Больше реальных данных**: ChessFraud-Synth как pretrain → fine-tune на
+   `chess_fraud`, внешняя валидация на новых когортах.
+4. **Per-game isolation**: одна плохая партия не должна валить scan.
+5. **LLM-провайдер** (Gemini Flash) вместо fallback, со strict schema.
+6. **Frontend** (Next.js) + polling + графики CPL/time/top-1.
+7. **Security/privacy**: auth, rate-limit, retention, запрет индексации.
+8. **PostgreSQL/Redis** для multi-process worker.
 
 ---
 
-## 8. Конфигурация
+## 10. Лицензии и атрибуция
 
-| Переменная | По умолчанию | Ограничение |
-|---|---|---|
-| `APP_ENV` / `APP_NAME` / `LOG_LEVEL` | `development` / `fair-play-detector` / `INFO` | |
-| `API_HOST` / `API_PORT` | `127.0.0.1` / `8000` | порт 1..65535 |
-| `LICHESS_API_BASE_URL` | `https://lichess.org` | HTTP-URL |
-| `DATABASE_URL` | `sqlite+aiosqlite:///./data/fair_play.db` | |
-| `ANALYSIS_DEPTH` | `15` | ≥ 1 |
-| `ANALYSIS_TIME_MS` | `100` | ≥ 1 |
-| `MAX_CONCURRENT_SCANS` | `2` | ≥ 1 |
-| `MAX_PENDING_SCANS` | `20` | ≥ 0 |
+ChessFraud распространяется по CC BY 4.0. Если используешь данные/модель,
+цитируй:
 
-`REDIS_URL` объявлен, но не используется. PostgreSQL и Redis — закомментированы в `.env.example` (Phase 2).
+```
+Linich, A., Lepin, A., Sakhovskiy, A., Toleutaeva, A., Lepa, G.,
+Neznamov, A., Budennyy, S. (2026).
+ChessFraud: Exploring the Capabilities of Human-Aligned Models for Cheating
+Detection in Online Chess. KDD 2026. https://doi.org/10.1145/3770855.3817587
+```
+
+ChessFraud-Synth — производное от публичной Lichess DB (CC0).
