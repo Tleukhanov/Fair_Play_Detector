@@ -9,7 +9,6 @@ import httpx
 
 from .username import normalize_username
 
-
 #: Lichess rejects the default httpx user agent with HTTP 404.  A descriptive
 #: agent (and the public project URL as contact) is required for API access.
 USER_AGENT = "fair-play-detector/0.1 (+https://github.com/Tleukhanov/Fair_Play_Detector)"
