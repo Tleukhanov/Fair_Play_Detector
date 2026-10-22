@@ -39,7 +39,8 @@ class MoveAnalysis:
     ``is_noisy_position`` when the engine already sees a forced mate for either
     side before the move; such moves carry no useful signal and are filtered out
     of aggregates. ``time_seconds`` is the clock delta for the move and is
-    ``None`` when the PGN has no ``%clk`` annotations.
+    ``None`` when the PGN has no ``%clk`` annotations; ``clock_seconds`` is the
+    mover's remaining clock after the move, used by serve-time feature parity.
     """
 
     ply: int
@@ -52,6 +53,7 @@ class MoveAnalysis:
     is_top_1: bool
     is_top_3: bool
     time_seconds: float | None = None
+    clock_seconds: float | None = None
     analysis_depth: int | None = None
     maia_eval: float | None = None
     maia_move_probability: float | None = None
@@ -75,3 +77,5 @@ class MoveAnalysis:
             )
         if self.time_seconds is not None and self.time_seconds < 0:
             raise ValueError("time_seconds must be non-negative")
+        if self.clock_seconds is not None and self.clock_seconds < 0:
+            raise ValueError("clock_seconds must be non-negative")
