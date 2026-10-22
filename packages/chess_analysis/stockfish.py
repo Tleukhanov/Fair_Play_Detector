@@ -134,6 +134,7 @@ class StockfishEngine:
                             is_top1_sf15=move == best_move,
                             centipawn_loss=cpl,
                             time_seconds=thinking,
+                            clock_seconds=remaining,
                             analysis_depth=self._config.depth,
                             is_forced=is_forced,
                             is_noisy_position=is_noisy,
