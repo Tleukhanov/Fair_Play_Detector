@@ -47,4 +47,16 @@ jobs:
         run: python -m mypy
 
       - name: Pytest
-        run: python -m pytest -q
+        run: |
+          set +e
+          python -m pytest -q 2>&1 | tee pytest.log
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            {
+              echo "### Pytest failed (exit $status)"
+              echo '```'
+              tail -n 200 pytest.log
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+          exit "$status"
