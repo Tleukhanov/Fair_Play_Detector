@@ -11,9 +11,9 @@ import re
 import tempfile
 import zipfile
 from collections import Counter
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from pathlib import Path
-from typing import BinaryIO
+from typing import IO, Any, cast
 from urllib.parse import urlparse
 
 import httpx
@@ -64,8 +64,8 @@ def collect_dataset(
 ) -> DatasetCollectionReport:
     """Collect both bounded sources and stop after writing the report."""
 
-    _require_period("LICHESS_ELITE_MONTH", lichess_elite_month)
-    _require_period("TCEC_SEASON", tcec_season)
+    lichess_elite_month = _require_period("LICHESS_ELITE_MONTH", lichess_elite_month)
+    tcec_season = _require_period("TCEC_SEASON", tcec_season)
     output_dir.mkdir(parents=True, exist_ok=True)
     quota = ByteQuota(quota_bytes)
     own_client = client is None
@@ -79,7 +79,7 @@ def collect_dataset(
             ("engine_like", "tcec", tcec_season, tcec_url_template),
         ):
             url = template.format(period=period)
-            report, metadata, source_samples = _collect_source(
+            source_report, metadata, source_samples = _collect_source(
                 http_client,
                 quota,
                 dataset_class,
@@ -88,7 +88,7 @@ def collect_dataset(
                 url,
                 output_dir,
             )
-            reports.append(report)
+            reports.append(source_report)
             source_metadata[dataset_class] = metadata
             samples.extend(source_samples)
         if sum(item.games_processed for item in reports) < 5:
@@ -210,7 +210,14 @@ def _collect_source(
     )
 
 
-def _write_row_batch(pa, pq, writer, path: Path, rows: list[DatasetFeatureRow]):
+def _write_row_batch(
+    pa: Any,
+    pq: Any,
+    writer: Any,
+    path: Path,
+    rows: list[DatasetFeatureRow],
+) -> Any:
+    # `pa`/`pq` are pyarrow modules, which ship without type information.
     table = pa.Table.from_pylist([row.model_dump() for row in rows])
     if writer is None:
         writer = pq.ParquetWriter(path, table.schema, compression="zstd")
@@ -272,21 +279,22 @@ def _fast_parse_game(lines: list[str]) -> ParsedGame | None:
     return ParsedGame(headers=headers, pgn="".join(lines))
 
 
-def _decompressor(path: Path):
+def _decompressor(path: Path) -> Callable[..., IO[bytes]]:
     suffix = path.suffix.lower()
     if suffix == ".gz":
-        return gzip.open
+        # stdlib openers are overloaded on literal modes; the caller only uses "rb".
+        return cast(Callable[..., IO[bytes]], gzip.open)
     if suffix == ".bz2":
-        return bz2.open
+        return cast(Callable[..., IO[bytes]], bz2.open)
     if suffix in {".xz", ".lzma"}:
-        return lzma.open
+        return cast(Callable[..., IO[bytes]], lzma.open)
     if suffix == ".zst":
         try:
             import zstandard
         except ImportError as exc:
             raise RuntimeError("zstandard is required for .zst dataset sources") from exc
 
-        def open_zstd(source: Path, mode: str):
+        def open_zstd(source: Path, mode: str) -> IO[bytes]:
             if mode != "rb":
                 raise ValueError("dataset zstd reader is read-only")
             handle = source.open("rb")
@@ -296,7 +304,7 @@ def _decompressor(path: Path):
     return open
 
 
-def _chunks(stream: BinaryIO, size: int = 1024 * 1024) -> Iterator[bytes]:
+def _chunks(stream: IO[bytes], size: int = 1024 * 1024) -> Iterator[bytes]:
     while chunk := stream.read(size):
         yield chunk
 
@@ -337,6 +345,7 @@ def _write_parquet_atomic(path: Path, rows: Iterable[DatasetFeatureRow]) -> dict
     return {"path": str(path), "bytes": size, "sha256": digest, "columns": FEATURE_COLUMNS}
 
 
-def _require_period(name: str, value: str | None) -> None:
+def _require_period(name: str, value: str | None) -> str:
     if not value:
         raise MissingCollectionPeriod(f"{name} must be provided before network access")
+    return value
