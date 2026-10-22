@@ -20,6 +20,7 @@ from .feature_contract import (
     validate_feature_values,
     validate_player_disjoint,
 )
+from .protocols import Scorer
 
 __all__ = [
     "BaselineScorer",
@@ -34,6 +35,7 @@ __all__ = [
     "Phase",
     "RiskThresholds",
     "ScoreResult",
+    "Scorer",
     "ScoringInput",
     "TARGET_COLUMN",
     "validate_feature_columns",
