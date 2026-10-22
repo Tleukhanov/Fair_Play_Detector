@@ -119,6 +119,11 @@ def test_training_writes_round_trippable_artifact(tmp_path: Path) -> None:
     )
     assert len(metadata["dataset_hash"]) == 64
     assert metadata["thresholds"]["high_risk"] > metadata["thresholds"]["suspicious"]
+    player_thresholds = metadata["player_thresholds"]
+    assert player_thresholds["high_risk"] > player_thresholds["suspicious"]
+    assert player_thresholds["validation_players"] > 0
+    assert "mean + 1*std" in player_thresholds["derivation"]
+    assert player_thresholds["note"].startswith("small-N")
     assert metadata["calibration"]["fitted_on"].startswith("validation")
     assert metadata["global_feature_importance"]
     assert metadata["prevalence_caveat"]
@@ -127,6 +132,12 @@ def test_training_writes_round_trippable_artifact(tmp_path: Path) -> None:
     scorer = TrainedScorer.load(output_dir)
     assert scorer.metadata.feature_names == list(GAME_FEATURE_NAMES)
     assert scorer.metadata.dataset_hash == metadata["dataset_hash"]
+    assert scorer.player_thresholds.suspicious == pytest.approx(
+        player_thresholds["suspicious"]
+    )
+    assert scorer.player_thresholds.high_risk == pytest.approx(
+        player_thresholds["high_risk"]
+    )
 
     assert report["leakage_gate"]["player_splits_disjoint"] is True
     assert report["per_move_research"]["status"] == "skipped"
@@ -164,6 +175,17 @@ def test_report_contains_metrics_baselines_and_calibration(tmp_path: Path) -> No
     assert set(report["candidate_models"]) == {"xgboost", "logreg"}
     assert report["threshold_selection"]["selected_on"].startswith("validation")
     assert report["threshold_selection"]["f1_optimal_validation"]["f1"] >= 0.0
+
+    assert report["player_thresholds"]["high_risk"] > report["player_thresholds"]["suspicious"]
+    player_evaluation = report["player_level_evaluation"]
+    for split in ("validation", "test"):
+        summary = player_evaluation[split]
+        assert summary["players"] > 0
+        assert sum(summary["counts"].values()) == summary["players"]
+        assert len(summary["player_scores"]) == summary["players"]
+        for score in summary["player_scores"].values():
+            assert 0.0 <= score["mean_probability"] <= 1.0
+            assert score["risk_level"] in {"low_risk", "suspicious", "high_risk"}
 
 
 def test_leakage_gate_rejects_forbidden_columns() -> None:
