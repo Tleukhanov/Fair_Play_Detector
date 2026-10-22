@@ -1,0 +1,133 @@
+{
+  "report_version": "1.0.0",
+  "model_version": "chessfraud-v1",
+  "generated_at": "2026-10-22",
+  "dataset": {
+    "name": "artemlepin/chess-fraud",
+    "config": "chess_fraud",
+    "source_file": "chessfraud_full.parquet",
+    "sha256": "14f2df9c0448b76adda21a69cd786fa9881cde66d4cebbe5121d27590bcf7110",
+    "raw_rows": 38510,
+    "used_rows": 28410,
+    "player_games": 1010,
+    "players": 49,
+    "player_game_prevalence": 0.402970297029703,
+    "time_control": "300+0",
+    "label": "is_cheating_player_game"
+  },
+  "split": {
+    "strategy": "GroupShuffleSplit by player_id, 60/20/20, player-disjoint",
+    "seed": 2025,
+    "train_games": 610,
+    "validation_games": 202,
+    "test_games": 198,
+    "train_players": 29,
+    "validation_players": 10,
+    "test_players": 10,
+    "test_prevalence": 0.41414141414141414
+  },
+  "model": {
+    "type": "xgboost",
+    "n_estimators": 300,
+    "max_depth": 4,
+    "learning_rate": 0.05,
+    "calibration": "sigmoid on player-disjoint validation, frozen base estimator",
+    "features": [
+      "mean_centipawn_loss",
+      "median_centipawn_loss",
+      "p90_centipawn_loss",
+      "top_1_match_rate",
+      "tactical_error_count",
+      "centipawn_loss_stability",
+      "identical_time_share",
+      "median_time_seconds",
+      "mean_time_seconds",
+      "time_variance",
+      "has_timing"
+    ]
+  },
+  "test_metrics": {
+    "n": 198,
+    "positives": 82,
+    "prevalence": 0.41414141414141414,
+    "roc_auc": 0.730340622371741,
+    "roc_auc_player_bootstrap_95ci": [0.6454, 0.8130],
+    "pr_auc": 0.7187129833670862,
+    "pr_auc_player_bootstrap_95ci": [0.6327, 0.8270],
+    "brier": 0.20046515240606635,
+    "brier_player_bootstrap_95ci": [0.1755, 0.2294],
+    "recall_at_fpr_1pct": 0.1098,
+    "recall_at_fpr_5pct": 0.1707
+  },
+  "baselines_test": {
+    "top_1_match_rate": {
+      "roc_auc": 0.7265,
+      "pr_auc": 0.6874,
+      "recall_at_fpr_5pct": 0.1098
+    },
+    "inverse_mean_centipawn_loss": {
+      "roc_auc": 0.5299,
+      "pr_auc": 0.4235,
+      "recall_at_fpr_5pct": 0.0122
+    },
+    "player_level_baseline_scorer": {
+      "roc_auc": 0.5833,
+      "players": 10
+    },
+    "player_level_trained_model": {
+      "roc_auc": 0.75,
+      "players": 10
+    }
+  },
+  "paired_player_bootstrap_model_minus_top1": {
+    "auc_difference": -0.00013,
+    "ci_95": [-0.0598, 0.0556],
+    "conclusion": "no proven advantage over the top-1 heuristic on this cohort"
+  },
+  "thresholds": {
+    "per_game_reference": {
+      "suspicious": 0.7428150401164224,
+      "high_risk": 0.7763764127138273,
+      "selected_on": "validation per-game probabilities at target FPR 5%/1%"
+    },
+    "player_level_verdict": {
+      "suspicious": 0.491500845861979,
+      "high_risk": 0.5637755996241386,
+      "derivation": "mean + 1*std and mean + 2*std of validation per-player mean probabilities (population std, ddof=0)",
+      "validation_player_mean": 0.4192260920998194,
+      "validation_player_std": 0.07227475376215958,
+      "validation_players": 10,
+      "note": "small-N; recalibrate on a larger cohort"
+    }
+  },
+  "risk_level_distribution": {
+    "validation": {
+      "low_risk": 8,
+      "suspicious": 2,
+      "high_risk": 0
+    },
+    "test": {
+      "low_risk": 8,
+      "suspicious": 2,
+      "high_risk": 0
+    }
+  },
+  "per_move_research": {
+    "model": "logistic regression / 12-feature contract",
+    "validation": "GroupKFold 3 by player_id, out-of-fold",
+    "rows": 28410,
+    "roc_auc": 0.6639,
+    "pr_auc": 0.4262,
+    "serving": false
+  },
+  "limitations": [
+    "49 players, 10 test players; wide confidence intervals and seed sensitivity",
+    "no proven improvement over the top-1 agreement heuristic",
+    "test prevalence is 41.4%; precision does not transfer to a <1% real-world prevalence",
+    "player-level thresholds are estimated from 10 validation players and are noisy",
+    "high_risk is effectively unreachable in the current cohort",
+    "per-move model is research-only and is not wired into serving",
+    "Maia/Allie are not available at inference; maia_divergence is always null",
+    "ChessFraud is a controlled 5+0 tournament, not general online traffic"
+  ]
+}

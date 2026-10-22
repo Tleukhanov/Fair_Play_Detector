@@ -26,8 +26,8 @@
 | **Frontend** | ❌ отсутствует | — |
 | **Maia** | ❌ не подключена (не входит в inference) | — |
 
-Проверки в локальном окружении: `pytest` (см. раздел 8), `ruff` чистый,
-`mypy` — см. актуальный вывод в CI/локально.
+Проверки в локальном окружении: **117 тестов** зелёные, `ruff` и `mypy`
+чистые; CI-workflow добавлен (Python 3.12 + Stockfish + ruff/mypy/pytest).
 
 ---
 
@@ -128,8 +128,17 @@ validation, артефакт `data/models/chessfraud-v1`.
 | Recall @ FPR 1% | **0.1098** | 0.0588–0.1769 |
 | Recall @ FPR 5% | **0.1707** | 0.1000–0.2746 |
 
-Пороги выбраны только на validation:
-`suspicious = 0.7428` (FPR 5%), `high_risk = 0.7764` (FPR 1%).
+**Пороги вердикта (player-level).** `TrainedScorer` агрегирует per-game
+вероятности в среднее по играм, поэтому вердикт использует пороги на шкале
+player-mean, выбранные на validation по 10 игрокам:
+`suspicious = 0.4915` (`mean + 1σ`), `high_risk = 0.5638` (`mean + 2σ`).
+Per-game пороги `0.7428 / 0.7764` (FPR 5%/1%) сохранены в metadata только для
+отчётности: смешивать их с player-mean нельзя — именно это давало вечный
+`low_risk`.
+
+На validation/test это даёт **8 low / 2 suspicious / 0 high**. `high_risk` в
+текущей когорте почти недостижим (max mean 0.5630 при пороге 0.5638); пороги
+построены по 10 игрокам, поэтому шумные — пересчитать на большей когорте.
 
 **Baselines (test):**
 
@@ -148,6 +157,9 @@ CI `[−0.0598, +0.0556]`. То есть модель пока не лучше �
 
 **Per-move research** (GroupKFold 3 by player, 28 410 строк): OOF ROC-AUC
 **0.6639**, PR-AUC **0.4262**. В serving не подключена.
+
+Машиночитаемый отчёт с метриками, порогами и ограничениями:
+`reports/chessfraud_metrics.json`.
 
 ---
 
@@ -171,7 +183,13 @@ POST /api/v1/scans
   игры;
 - `game_scores` уникальны по `(game_id, model_version)`, re-score идемпотентен;
 - зависшие сканы старше `STALE_SCAN_MINUTES` переводятся в `failed` на старте;
-- `rated_only` доезжает до Lichess API.
+- `rated_only` доезжает до Lichess API;
+- клиент Lichess отправляет описательный `User-Agent` — без него API отдаёт
+  `404` (проверено live-smoke).
+
+**Live smoke (22.10.2026):** 10 blitz-партий `DrNykterstein` → Stockfish 19,
+depth 15 / 100 ms → `TrainedScorer` → `completed`, `low_risk 0.3589`
+(CI 0.2964–0.4268), 5 evidence. Это проверка пайплайна, а не качества модели.
 
 ---
 
@@ -209,6 +227,7 @@ packages/
   dataset/             старый bounded collector (Lichess Elite/TCEC; не используется)
   llm/                 контракты объяснений + deterministic fallback
 scripts/               download_chessfraud.py
+reports/               chessfraud_metrics.json
 migrations/            Alembic 0001…0005
 tests/                 pytest
 data/models/           артефакты (gitignored)
@@ -273,9 +292,9 @@ python -m packages.ml.train \
 ### Тесты и линтеры
 
 ```bash
-python -m pytest -q                          # см. актуальный вывод
+python -m pytest -q                          # 117 passed (smoke skip без артефакта)
 python -m ruff check apps packages tests scripts
-python -m mypy
+python -m mypy                               # Success: no issues found in 58 source files
 ```
 
 Stockfish-тесты пропускаются, если бинарь не найден.
