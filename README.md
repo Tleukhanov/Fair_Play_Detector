@@ -23,10 +23,10 @@
 | **Анализ + скоринг** | ✅ `ChessAnalysisStage` + `ScoringStage` подключены | `apps/api/app/workers/analysis_stages.py` |
 | **ML-модель** | ✅ обучена на ChessFraud, артефакт + `TrainedScorer` | `packages/ml/train.py`, `scorer.py` |
 | **LLM-слой** | ⚠️ только детерминированный fallback | `packages/llm/` |
-| **Frontend** | ❌ отсутствует | — |
+| **Фронтенд** | ✅ статический no-build UI на `/app/` | `apps/web/` |
 | **Maia** | ❌ не подключена (не входит в inference) | — |
 
-Проверки в локальном окружении: **117 тестов** зелёные, `ruff` и `mypy`
+Проверки в локальном окружении: **162 passed, 1 skipped**, `ruff` и `mypy`
 чистые; CI-workflow добавлен (Python 3.12 + Stockfish + ruff/mypy/pytest).
 
 ---
@@ -206,7 +206,11 @@ depth 15 / 100 ms → `TrainedScorer` → `completed`, `low_risk 0.3589`
 - **Одна ошибка движка валит весь scan** (`ANALYSIS_FAILED`); per-game isolation
   не сделана.
 - **LLM-провайдер не подключён** — только deterministic fallback.
-- **Frontend отсутствует.**
+- **Фронтенд — demo-UI без аккаунтов**: последние сканы хранятся только в
+  `localStorage`, серверной истории и авторизации нет.
+- **Страница партии упирается в backend-контракт**: список партий отдаёт
+  `lichess_game_id`, а `GET /games/{id}` ищет внутренний `games.id`; UI честно
+  показывает «Партия не найдена». Исправление относится к API, не к фронтенду.
 - **Нет auth/rate-limit/retention** на публичном API; перед публикацией нужен
   security/privacy review.
 - `ScanPipeline` (`workers/pipeline.py`) не используется — прод-путь идёт через
@@ -219,6 +223,7 @@ depth 15 / 100 ms → `TrainedScorer` → `completed`, `low_risk 0.3589`
 
 ```
 apps/api/app/          FastAPI: роуты, модели БД, воркеры
+apps/web/              статический фронтенд (HTML/CSS/ES-модули, без сборки)
 packages/
   ingest/              клиент Lichess, PGN, персистентность
   chess_analysis/      Stockfish + агрегация признаков
@@ -259,6 +264,26 @@ export STOCKFISH_PATH=$(which stockfish)
 ```
 
 Проверка: `GET /health` → `{"status": "ok"}`, Swagger на `/docs`.
+
+### Фронтенд
+
+Статический интерфейс отдаётся тем же процессом на `/app/`: без Node, сборки
+и регистрации. Он ходит в тот же `/api/v1` на том же origin, поэтому CORS не
+нужен. Последние проверки хранятся только в `localStorage` браузера.
+
+```bash
+uvicorn apps.api.app.main:app
+# http://127.0.0.1:8000/app/
+```
+
+В UI есть форма (ник, 10–50 партий, блиц/рапид, только рейтинговые), живой
+прогресс по этапам, вердикт со score/CI/признаками, таблица партий с
+пагинацией, разбор ходов по партии, светлая/тёмная тема и недавние сканы.
+Ошибки валидации, переполненной очереди, сети, упавшего скана и `404`
+показываются текстом с кнопкой повторной попытки.
+
+Score — вероятностный сигнал для дополнительной проверки, **не доказательство
+читерства**.
 
 ### Данные и обучение
 
@@ -314,7 +339,8 @@ Stockfish-тесты пропускаются, если бинарь не най
    `chess_fraud`, внешняя валидация на новых когортах.
 4. **Per-game isolation**: одна плохая партия не должна валить scan.
 5. **LLM-провайдер** (Gemini Flash) вместо fallback, со strict schema.
-6. **Frontend** (Next.js) + polling + графики CPL/time/top-1.
+6. **Графики во фронтенде**: CPL/time/top-1 по партиям и экспорт результата;
+   базовый UI, polling и разбор ходов уже есть.
 7. **Security/privacy**: auth, rate-limit, retention, запрет индексации.
 8. **PostgreSQL/Redis** для multi-process worker.
 

@@ -10,6 +10,9 @@ const API_BASE =
   "/api/v1";
 
 const TERMINAL_STATUSES = new Set(["completed", "failed"]);
+const DEFAULT_TIMEOUT_MS = 20000;
+// Retrying these cannot help: the scan or game does not exist for this id.
+const FATAL_STATUSES = new Set([404, 410]);
 
 export class ApiError extends Error {
   constructor(message, { status = 0, detail = null } = {}) {
@@ -41,27 +44,56 @@ function detailMessage(detail, fallback) {
   return fallback || "Запрос не удался";
 }
 
-async function request(path, { method = "GET", body, signal } = {}) {
+async function request(
+  path,
+  { method = "GET", body, signal, timeoutMs = DEFAULT_TIMEOUT_MS } = {},
+) {
   const headers = { Accept: "application/json" };
   if (body !== undefined) headers["Content-Type"] = "application/json";
 
+  const controller = new AbortController();
+  let timedOut = false;
+  const timer =
+    timeoutMs > 0
+      ? setTimeout(() => {
+          timedOut = true;
+          controller.abort();
+        }, timeoutMs)
+      : null;
+  const forwardAbort = () => controller.abort();
+  if (signal) {
+    if (signal.aborted) controller.abort();
+    else signal.addEventListener("abort", forwardAbort, { once: true });
+  }
+
   let response;
+  let text = "";
   try {
     response = await fetch(`${API_BASE}${path}`, {
       method,
       headers,
       body: body === undefined ? undefined : JSON.stringify(body),
-      signal,
+      signal: controller.signal,
     });
+    text = await response.text();
   } catch (error) {
+    if (signal?.aborted) throw error;
+    if (timedOut) {
+      throw new ApiError("Сервер не ответил вовремя. Проверьте подключение и повторите.", {
+        status: 0,
+        detail: error,
+      });
+    }
     if (error?.name === "AbortError") throw error;
     throw new ApiError("Сервер недоступен. Проверьте, что API запущен.", {
       status: 0,
       detail: error,
     });
+  } finally {
+    if (timer !== null) clearTimeout(timer);
+    if (signal) signal.removeEventListener("abort", forwardAbort);
   }
 
-  const text = await response.text();
   let payload = null;
   if (text) {
     try {
@@ -161,6 +193,11 @@ export function pollScan(
       schedule(intervalMs);
     } catch (error) {
       if (stopped) return;
+      if (error?.status && FATAL_STATUSES.has(error.status)) {
+        stop();
+        onError?.(error);
+        return;
+      }
       networkErrors += 1;
       if (networkErrors > maxNetworkErrors) {
         stop();

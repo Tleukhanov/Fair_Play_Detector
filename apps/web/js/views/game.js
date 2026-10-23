@@ -61,6 +61,12 @@ function sanCell(move) {
   return el("span", { class: "mono" }, label);
 }
 
+function timeCell(value) {
+  const number = Number(value);
+  if (value === null || value === undefined || !Number.isFinite(number)) return "—";
+  return `${number.toFixed(1)} с`;
+}
+
 function movesTable(moves) {
   const headers = [
     { label: "Пли", className: "num" },
@@ -79,9 +85,7 @@ function movesTable(moves) {
       formatCpl(move?.centipawn_loss),
     ),
     topCell(move),
-    move?.time_seconds === null || move?.time_seconds === undefined
-      ? "—"
-      : `${Number(move.time_seconds).toFixed(1)} с`,
+    timeCell(move?.time_seconds),
     move?.maia_probability === null || move?.maia_probability === undefined
       ? "—"
       : formatPercent(move.maia_probability, 0),
@@ -195,14 +199,20 @@ function movesCard(moves) {
   );
 }
 
+function errorText(error) {
+  const status = Number(error?.status) || 0;
+  if (status === 0) return "Сервер недоступен. Проверьте подключение и повторите.";
+  if (status >= 500) return `Сервер вернул ошибку ${status}. Попробуйте ещё раз позже.`;
+  if (error instanceof Error && error.message && /[А-Яа-яЁё]/.test(error.message)) {
+    return error.message;
+  }
+  return "Не удалось загрузить партию. Попробуйте ещё раз.";
+}
+
 function errorCard(title, error, retry) {
-  const message =
-    error instanceof Error && error.message
-      ? error.message
-      : "Неизвестная ошибка. Попробуйте ещё раз.";
   return card(
     { title },
-    alert(message, "error", { title: "Ошибка загрузки" }),
+    alert(errorText(error), "error", { title: "Ошибка загрузки" }),
     el(
       "div",
       { class: "form-actions" },
@@ -211,26 +221,32 @@ function errorCard(title, error, retry) {
         { type: "button", class: "btn btn-secondary", onclick: () => retry() },
         "Повторить",
       ),
+      el("a", { class: "btn btn-ghost", href: "#/" }, "На главную"),
     ),
   );
 }
 
-function notFoundCard(scanId) {
+function notFoundCard(scanId, scanMissing = false) {
+  const title = scanMissing ? "Скан не найден" : "Партия не найдена";
   return card(
-    { title: "Партия не найдена" },
+    { title },
     alert(
-      "Backend не нашёл эту партию в указанном скане. Возможно, ссылка устарела.",
-      "warn",
-      { title: "Партия не найдена" },
+      scanMissing
+        ? "Сервер не знает скан с таким идентификатором. Возможно, ссылка устарела."
+        : "Backend не нашёл эту партию в указанном скане. Возможно, ссылка устарела.",
+      scanMissing ? "error" : "warn",
+      { title },
     ),
     el(
       "div",
       { class: "form-actions" },
-      el(
-        "a",
-        { class: "btn btn-secondary", href: `#/scan/${encodeURIComponent(scanId)}/result` },
-        "Назад к вердикту",
-      ),
+      scanMissing
+        ? el("a", { class: "btn btn-primary", href: "#/" }, "На главную")
+        : el(
+            "a",
+            { class: "btn btn-secondary", href: `#/scan/${encodeURIComponent(scanId)}/result` },
+            "Назад к вердикту",
+          ),
     ),
   );
 }
@@ -305,6 +321,7 @@ export async function renderGame(root, params = {}) {
   }
 
   async function load() {
+    slot.setAttribute("aria-busy", "true");
     slot.replaceChildren(...skeleton());
     try {
       const data = await getGame(scanId, gameId);
@@ -318,10 +335,13 @@ export async function renderGame(root, params = {}) {
     } catch (error) {
       if (!slot.isConnected) return;
       if (error instanceof ApiError && error.status === 404) {
-        slot.replaceChildren(notFoundCard(scanId));
+        const detail = typeof error.detail === "string" ? error.detail : "";
+        slot.replaceChildren(notFoundCard(scanId, /scan not found/i.test(detail)));
         return;
       }
       slot.replaceChildren(errorCard("Не удалось загрузить партию", error, load));
+    } finally {
+      if (slot.isConnected) slot.setAttribute("aria-busy", "false");
     }
   }
 

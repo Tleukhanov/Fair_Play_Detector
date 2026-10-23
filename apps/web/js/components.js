@@ -32,6 +32,14 @@ export function el(tag, attrs = {}, ...children) {
       node.setAttribute(key, String(value));
     }
   }
+  // Defence in depth: any link opened in a new tab gets a safe rel, even if a
+  // future caller forgets to pass one.
+  if (node.getAttribute("target") === "_blank") {
+    const rel = new Set((node.getAttribute("rel") || "").split(/\s+/).filter(Boolean));
+    rel.add("noopener");
+    rel.add("noreferrer");
+    node.setAttribute("rel", [...rel].join(" "));
+  }
   append(node, children);
   return node;
 }
@@ -134,6 +142,7 @@ export function progress(value, options = {}) {
         "aria-valuemin": "0",
         "aria-valuemax": "100",
         "aria-valuenow": String(Math.round(percent)),
+        "aria-valuetext": options.detail || `${Math.round(percent)}%`,
       },
       el("div", { class: "progress-bar", style: { width: `${percent}%` } }),
     ),
@@ -333,7 +342,17 @@ export function tableWrap(headers = [], rows = [], options = {}) {
   );
   const table = el("table", { class: options.className || null }, head, body);
   if (options.caption) table.prepend(el("caption", {}, options.caption));
-  return el("div", { class: "table-wrap" }, table);
+  // Scrollable tables are keyboard-scrollable focus targets on narrow screens.
+  return el(
+    "div",
+    {
+      class: "table-wrap",
+      tabindex: "0",
+      role: "region",
+      "aria-label": options.ariaLabel || options.caption || "Таблица",
+    },
+    table,
+  );
 }
 
 /**
@@ -367,7 +386,7 @@ export function pagination(options = {}) {
         class: `page-btn${target === page ? " active" : ""}`,
         disabled: disabled || null,
         "aria-current": target === page ? "page" : null,
-        "aria-label": extra.ariaLabel || null,
+        "aria-label": extra.ariaLabel || `Страница ${target}`,
         onclick: () => {
           if (onNavigate && !disabled) onNavigate(target);
         },

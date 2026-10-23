@@ -94,10 +94,12 @@ function submitErrorMessage(error) {
   const message = typeof error?.message === "string" ? error.message.trim() : "";
 
   if (status === 422) {
-    return message || "Сервер отклонил параметры запроса. Проверьте ник, число партий и контроль.";
+    return "Сервер отклонил параметры запроса. Проверьте ник, число партий и контроль времени.";
   }
+  if (status === 429) return "Слишком много запросов. Подождите минуту и попробуйте снова.";
   if (status === 503) return "Очередь переполнена. Попробуйте через минуту.";
   if (status === 0) return "Сервер недоступен. Проверьте подключение и попробуйте ещё раз.";
+  if (status >= 500) return `Ошибка сервера (${status}). Попробуйте ещё раз позже.`;
   return message || "Не удалось запустить проверку. Попробуйте ещё раз.";
 }
 
@@ -112,6 +114,8 @@ function buildForm() {
     maxlength: String(USERNAME_MAX),
     placeholder: "lichess nick",
     autocomplete: "off",
+    autocapitalize: "none",
+    autocorrect: "off",
     spellcheck: "false",
     "aria-describedby": "username-help username-error",
     value: prefillUsername(),
@@ -139,7 +143,7 @@ function buildForm() {
   const speedError = el("p", { class: "form-help", id: "speed-error", hidden: true });
   const speedGroup = el(
     "fieldset",
-    { class: "form-group" },
+    { class: "form-group", "aria-describedby": "speed-error" },
     el("legend", {}, "Контроль времени"),
     el("div", { class: "segmented" }, speedInputs),
     speedError,
@@ -147,7 +151,7 @@ function buildForm() {
 
   const maxGamesSelect = el(
     "select",
-    { id: "max-games", name: "max_games" },
+    { id: "max-games", name: "max_games", "aria-describedby": "max-games-error" },
     MAX_GAMES.map((count) =>
       el("option", { value: String(count), selected: count === 30 || null }, String(count)),
     ),
@@ -159,7 +163,7 @@ function buildForm() {
   });
   const maxGamesGroup = el(
     "div",
-    { class: "form-group", style: { flex: "0 1 180px" } },
+    { class: "form-group form-group-narrow" },
     el("label", { for: "max-games" }, "Сколько партий"),
     maxGamesSelect,
     maxGamesError,
@@ -173,7 +177,7 @@ function buildForm() {
   });
   const ratedGroup = el(
     "div",
-    { class: "form-group", style: { flex: "1 1 240px", alignSelf: "flex-end" } },
+    { class: "form-group form-group-check" },
     el(
       "label",
       { class: "checkbox", for: "rated-only" },
@@ -213,6 +217,9 @@ function buildForm() {
     formAlert.replaceChildren();
     setFieldError(usernameInput, usernameError, "");
     setFieldError(maxGamesSelect, maxGamesError, "");
+    for (const radio of form.querySelectorAll('input[name="speed"]')) {
+      radio.removeAttribute("aria-invalid");
+    }
     setFieldError(null, speedError, "");
   };
 
@@ -222,8 +229,12 @@ function buildForm() {
   maxGamesSelect.addEventListener("change", () => {
     setFieldError(maxGamesSelect, maxGamesError, "");
   });
-  for (const radio of form.querySelectorAll('input[name="speed"]')) {
-    radio.addEventListener("change", () => setFieldError(null, speedError, ""));
+  const speedRadios = form.querySelectorAll('input[name="speed"]');
+  for (const radio of speedRadios) {
+    radio.addEventListener("change", () => {
+      for (const item of speedRadios) item.removeAttribute("aria-invalid");
+      setFieldError(null, speedError, "");
+    });
   }
 
   let submitting = false;
@@ -257,7 +268,11 @@ function buildForm() {
       });
     }
     if (!SPEEDS.includes(speed)) {
-      errors.push({ input: null, node: speedError, message: "Выберите блиц или рапид." });
+      errors.push({
+        input: form.querySelector('input[name="speed"]'),
+        node: speedError,
+        message: "Выберите блиц или рапид.",
+      });
     }
 
     if (errors.length) {
