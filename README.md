@@ -26,7 +26,7 @@
 | **Фронтенд** | ✅ статический no-build UI на `/app/` | `apps/web/` |
 | **Maia** | ❌ не подключена (не входит в inference) | — |
 
-Проверки в локальном окружении: **162 passed, 1 skipped**, `ruff` и `mypy`
+Проверки в локальном окружении: **163 passed, 1 skipped**, `ruff` и `mypy`
 чистые; CI-workflow добавлен (Python 3.12 + Stockfish + ruff/mypy/pytest).
 
 ---
@@ -208,9 +208,6 @@ depth 15 / 100 ms → `TrainedScorer` → `completed`, `low_risk 0.3589`
 - **LLM-провайдер не подключён** — только deterministic fallback.
 - **Фронтенд — demo-UI без аккаунтов**: последние сканы хранятся только в
   `localStorage`, серверной истории и авторизации нет.
-- **Страница партии упирается в backend-контракт**: список партий отдаёт
-  `lichess_game_id`, а `GET /games/{id}` ищет внутренний `games.id`; UI честно
-  показывает «Партия не найдена». Исправление относится к API, не к фронтенду.
 - **Нет auth/rate-limit/retention** на публичном API; перед публикацией нужен
   security/privacy review.
 - `ScanPipeline` (`workers/pipeline.py`) не используется — прод-путь идёт через

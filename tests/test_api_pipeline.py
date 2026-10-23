@@ -446,6 +446,37 @@ def test_rescan_keeps_a_game_row_per_scan() -> None:
     asyncio.run(scenario())
 
 
+def test_game_detail_accepts_public_and_internal_ids() -> None:
+    """The games list exposes the Lichess id, so detail must resolve it too."""
+
+    async def scenario() -> None:
+        database = await _new_database()
+        session_factory = database.session_factory
+        scan_id = await _seed_scan(session_factory, games=1)
+        scan_uuid = UUID(scan_id)
+
+        async with session_factory() as session:
+            game = await session.scalar(
+                select(GameModel).where(GameModel.scan_id == scan_id)
+            )
+            assert game is not None
+            assert game.lichess_game_id == "game0"
+            assert game.id != game.lichess_game_id
+
+            by_public_id = await get_scan_game(
+                scan_uuid, game.lichess_game_id, session=session
+            )
+            by_internal_id = await get_scan_game(scan_uuid, game.id, session=session)
+
+            assert by_public_id.game.game_id == "game0"
+            assert by_internal_id.game.game_id == "game0"
+            assert by_public_id.game.game_id == by_internal_id.game.game_id
+
+        await database.close()
+
+    asyncio.run(scenario())
+
+
 def test_game_dto_and_detail_expose_persisted_analysis() -> None:
     async def scenario() -> None:
         database = await _new_database()
