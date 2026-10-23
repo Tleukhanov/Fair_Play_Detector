@@ -98,6 +98,7 @@ class GameMoveDTO(DTOModel):
     ply: int = Field(ge=1)
     fen_before: str
     played_move_uci: str
+    played_move_san: str | None = None
     centipawn_loss: float = Field(ge=0.0)
     is_top_1: bool
     is_top_3: bool

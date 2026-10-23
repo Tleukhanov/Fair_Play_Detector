@@ -317,10 +317,12 @@ def _move_to_dto(raw: Mapping[str, Any]) -> GameMoveDTO | None:
     maia_probability = _as_optional_non_negative(raw.get("maia_move_probability"))
     if maia_probability is not None:
         maia_probability = min(1.0, maia_probability)
+    played_move_san = raw.get("played_move_san")
     return GameMoveDTO(
         ply=ply,
         fen_before=fen_before,
         played_move_uci=played_move_uci,
+        played_move_san=played_move_san if isinstance(played_move_san, str) else None,
         centipawn_loss=_move_centipawn_loss(raw),
         is_top_1=bool(raw.get("is_top_1") or raw.get("is_top1_sf15")),
         is_top_3=bool(raw.get("is_top_3")),

@@ -1025,3 +1025,25 @@ td.nowrap { white-space: nowrap; }
   .evidence-base { margin-left: 8px; }
   .step { flex-basis: 100%; }
 }
+
+/* ---------- Result & game views (result-games wave) ---------- */
+
+.raw-details { margin-top: 14px; }
+.raw-details > summary {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--c-text-muted);
+  cursor: pointer;
+}
+.raw-details > summary:hover { color: var(--c-text); }
+.raw-details[open] > summary { margin-bottom: 8px; }
+.details-body { margin-top: 6px; }
+
+.evidence-main { min-width: 0; }
+
+.games-table { min-width: 720px; }
+.games-table a { white-space: nowrap; }
+
+.moves-scroll { max-height: 68vh; overflow-y: auto; }
+.moves-scroll thead th { position: sticky; top: 0; z-index: 1; }
+
