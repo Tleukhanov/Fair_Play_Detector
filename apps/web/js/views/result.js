@@ -134,14 +134,29 @@ function gamesSkeleton() {
   );
 }
 
+function errorText(error, fallback) {
+  const status = Number(error?.status) || 0;
+  if (status === 0) {
+    return "Сервер недоступен. Проверьте подключение и повторите.";
+  }
+  if (status === 404 || status === 410) {
+    return "Данные не найдены. Возможно, ссылка устарела или скан был удалён.";
+  }
+  if (status >= 500) {
+    return `Сервер вернул ошибку ${status}. Попробуйте ещё раз позже.`;
+  }
+  if (error instanceof Error && error.message && /[А-Яа-яЁё]/.test(error.message)) {
+    return error.message;
+  }
+  return fallback;
+}
+
 function errorCard(title, error, retry) {
-  const message =
-    error instanceof Error && error.message
-      ? error.message
-      : "Неизвестная ошибка. Попробуйте ещё раз.";
   return card(
     { title },
-    alert(message, "error", { title: "Ошибка загрузки" }),
+    alert(errorText(error, "Не удалось загрузить данные. Попробуйте ещё раз."), "error", {
+      title: "Ошибка загрузки",
+    }),
     el(
       "div",
       { class: "form-actions" },
@@ -150,6 +165,21 @@ function errorCard(title, error, retry) {
         { type: "button", class: "btn btn-secondary", onclick: () => retry() },
         "Повторить",
       ),
+      el("a", { class: "btn btn-ghost", href: "#/" }, "На главную"),
+    ),
+  );
+}
+
+function missingScanCard() {
+  return card(
+    { title: "Скан не найден" },
+    alert("Сервер не знает скан с таким идентификатором. Возможно, ссылка устарела.", "error", {
+      title: "Скан не найден",
+    }),
+    el(
+      "div",
+      { class: "form-actions" },
+      el("a", { class: "btn btn-primary", href: "#/" }, "На главную"),
     ),
   );
 }
@@ -216,15 +246,18 @@ function evidenceRow(item) {
 }
 
 function russianSummary(verdict) {
-  const word = RISK_WORDS[verdict?.risk_level] || riskLabel(verdict?.risk_level).toLowerCase();
+  const level = typeof verdict?.risk_level === "string" ? verdict.risk_level : "";
+  const word = RISK_WORDS[level] || riskLabel(level).toLowerCase();
   const score = formatScore(verdict?.risk_score);
   const interval = formatCi(verdict?.confidence_interval);
   const games = numberOrNull(verdict?.games_analyzed);
-  const parts = [`Риск: ${word}.`];
+  const parts = [level ? `Риск: ${word}.` : "Уровень риска не определён."];
   if (score !== "—") {
     parts.push(
       interval === "—" ? `Score ${score}.` : `Score ${score}, 95% ДИ ${interval}.`,
     );
+  } else {
+    parts.push("Score не рассчитан.");
   }
   if (games !== null) {
     parts.push(`Сигнал основан на ${Math.round(games)} партиях.`);
@@ -344,7 +377,13 @@ function verdictCard(verdict) {
           el("div", { class: "metric-note" }, "game-level"),
         ),
       ),
-      riskMeter(score ?? 0),
+      score !== null
+        ? riskMeter(score)
+        : el(
+            "p",
+            { class: "table-note" },
+            "Шкала риска недоступна: backend не вернул score для этого скана.",
+          ),
       el("p", { class: "risk-summary" }, russianSummary(verdict)),
       el(
         "details",
@@ -509,7 +548,14 @@ export async function renderResult(root, params = {}) {
     }, 1400);
   }
 
+  function isMissingScan(error) {
+    const detail = typeof error?.detail === "string" ? error.detail : "";
+    const message = typeof error?.message === "string" ? error.message : "";
+    return /scan not found/i.test(detail) || /scan not found/i.test(message);
+  }
+
   async function loadVerdict() {
+    verdictSlot.setAttribute("aria-busy", "true");
     verdictSlot.replaceChildren(verdictSkeleton());
     try {
       const verdict = await getVerdict(scanId);
@@ -520,16 +566,23 @@ export async function renderResult(root, params = {}) {
       verdictSlot.replaceChildren(...verdictCard(verdict));
     } catch (error) {
       if (!verdictSlot.isConnected) return;
-      if (error instanceof ApiError && (error.status === 409 || error.status === 404)) {
+      if (error instanceof ApiError && error.status === 409) {
         verdictSlot.replaceChildren(pendingCard(scanId));
         redirectToScan();
         return;
       }
+      if (isMissingScan(error)) {
+        verdictSlot.replaceChildren(missingScanCard());
+        return;
+      }
       verdictSlot.replaceChildren(errorCard("Вердикт недоступен", error, loadVerdict));
+    } finally {
+      if (verdictSlot.isConnected) verdictSlot.setAttribute("aria-busy", "false");
     }
   }
 
   async function loadGames(page) {
+    gamesSlot.setAttribute("aria-busy", "true");
     gamesSlot.replaceChildren(gamesSkeleton());
     try {
       const data = await getGames(scanId, { page, pageSize: PAGE_SIZE });
@@ -537,7 +590,15 @@ export async function renderResult(root, params = {}) {
       gamesSlot.replaceChildren(gamesCard(data, scanId, page, loadGames));
     } catch (error) {
       if (!gamesSlot.isConnected) return;
-      gamesSlot.replaceChildren(errorCard("Не удалось загрузить партии", error, () => loadGames(page)));
+      if (isMissingScan(error)) {
+        gamesSlot.replaceChildren();
+        return;
+      }
+      gamesSlot.replaceChildren(
+        errorCard("Не удалось загрузить партии", error, () => loadGames(page)),
+      );
+    } finally {
+      if (gamesSlot.isConnected) gamesSlot.setAttribute("aria-busy", "false");
     }
   }
 

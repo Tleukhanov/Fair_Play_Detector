@@ -73,8 +73,19 @@ function systemTheme() {
   return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
 }
 
+function syncThemeColor() {
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if (!meta) return;
+  meta.setAttribute(
+    "content",
+    document.documentElement.dataset.theme === "dark" ? "#161512" : "#e8e5e2",
+  );
+}
+
 function applyTheme(theme) {
   document.documentElement.dataset.theme = theme;
+  document.documentElement.style.colorScheme = theme;
+  syncThemeColor();
   const button = document.querySelector("[data-theme-toggle]");
   if (!button) return;
   const dark = theme === "dark";
@@ -132,19 +143,34 @@ function setActiveNav(name) {
 
 function updateTitle(route) {
   document.title = `${route.title} · ${SITE_NAME}`;
-  const meta = document.querySelector('meta[name="theme-color"]');
-  if (meta) {
-    meta.setAttribute(
-      "content",
-      document.documentElement.dataset.theme === "dark" ? "#161512" : "#e8e5e2",
-    );
+  syncThemeColor();
+}
+
+let hasRendered = false;
+let renderToken = 0;
+
+function announceRoute(route) {
+  const status = document.getElementById("route-status");
+  if (!status) return;
+  status.textContent = `${route.title}. Страница загружена.`;
+}
+
+function focusContent(root) {
+  const heading = root.querySelector("h1");
+  if (heading) {
+    heading.setAttribute("tabindex", "-1");
+    heading.focus({ preventScroll: true });
+    return true;
   }
+  root.focus({ preventScroll: true });
+  return false;
 }
 
 async function renderRoute() {
   const root = document.getElementById("app");
   if (!root) return;
 
+  const token = ++renderToken;
   const path = currentPath();
   const matched = matchRoute(path);
   if (!matched && path !== "/") {
@@ -162,6 +188,7 @@ async function renderRoute() {
   try {
     await route.render(root, params);
   } catch (error) {
+    if (token !== renderToken) return;
     console.error("view render failed", error);
     root.replaceChildren(
       alert(
@@ -170,11 +197,21 @@ async function renderRoute() {
         { title: "Ошибка интерфейса" },
       ),
     );
-  } finally {
-    root.setAttribute("aria-busy", "false");
-    // Restart the enter animation after the new content is in the DOM.
-    void root.offsetWidth;
-    root.classList.add("view-enter");
+  }
+
+  if (token !== renderToken) return;
+
+  root.setAttribute("aria-busy", "false");
+  // Restart the enter animation after the new content is in the DOM.
+  void root.offsetWidth;
+  root.classList.add("view-enter");
+
+  // A hash router keeps focus on the old (now removed) link otherwise.
+  // Initial page load keeps the natural document order for screen readers.
+  if (hasRendered) {
+    if (!focusContent(root)) announceRoute(route);
+  } else {
+    hasRendered = true;
   }
 }
 

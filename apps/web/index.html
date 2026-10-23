@@ -6,6 +6,7 @@
   <meta name="api-base" content="/api/v1">
   <meta name="description" content="Вероятностный анализ публичных партий Lichess на признаки машинной игры. Статистический сигнал, а не доказательство читерства.">
   <meta name="theme-color" content="#e8e5e2">
+  <meta name="color-scheme" content="light dark">
   <title>fair play detector — проверка партий Lichess</title>
   <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="styles.css?v=1">
@@ -18,6 +19,8 @@
           ? stored
           : (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
         document.documentElement.dataset.theme = theme;
+        var meta = document.querySelector('meta[name="theme-color"]');
+        if (meta) meta.setAttribute("content", theme === "dark" ? "#161512" : "#e8e5e2");
       } catch (error) {
         document.documentElement.dataset.theme = "light";
       }
@@ -47,7 +50,9 @@
     </div>
   </header>
 
-  <main id="app" class="page" aria-live="polite"></main>
+  <p id="route-status" class="sr-only" role="status" aria-live="polite"></p>
+
+  <main id="app" class="page" tabindex="-1"></main>
 
   <noscript>
     <section class="page boot-fallback" aria-labelledby="boot-title">

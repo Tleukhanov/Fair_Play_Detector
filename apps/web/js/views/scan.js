@@ -298,18 +298,38 @@ export async function renderScan(root, params = {}) {
     renderStepper(key, status);
   }
 
-  function onError() {
+  function onError(error) {
     if (!progressCard.isConnected) {
       cleanup();
       return;
     }
     cleanup();
+
+    if (error?.status === 404 || error?.status === 410) {
+      statusBadge.textContent = "не найден";
+      statusBadge.className = "badge badge-bad";
+      heading.textContent = "Скан не найден";
+      lead.textContent = "Сервер не знает скан с таким идентификатором. Возможно, ссылка устарела.";
+      errorHost.replaceChildren(
+        alert("Такого скана нет. Запустите новую проверку.", "error", {
+          title: "Скан не найден",
+        }),
+        el(
+          "div",
+          { class: "form-actions" },
+          el("a", { class: "btn btn-primary", href: "#/" }, "На главную"),
+        ),
+      );
+      return;
+    }
+
     statusBadge.textContent = "нет связи";
     statusBadge.className = "badge badge-bad";
     heading.textContent = "Нет связи с сервером";
     errorHost.replaceChildren(
       alert(
-        "Не удалось получить состояние скана: сервер не отвечает. Проверьте подключение и повторите.",
+        error?.message ||
+          "Не удалось получить состояние скана: сервер не отвечает. Проверьте подключение и повторите.",
         "error",
         { title: "Сетевая ошибка" },
       ),

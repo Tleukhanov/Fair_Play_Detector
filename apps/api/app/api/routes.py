@@ -7,7 +7,7 @@ from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import HttpUrl
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from packages.chess_analysis.models import EVAL_CLIP_CP
@@ -199,8 +199,8 @@ async def get_scan_game(
         raise HTTPException(status_code=404, detail="scan not found")
     game = await session.scalar(
         select(GameModel).where(
-            GameModel.id == game_id,
             GameModel.scan_id == str(scan_id),
+            or_(GameModel.id == game_id, GameModel.lichess_game_id == game_id),
         )
     )
     if game is None:
