@@ -1,133 +1,365 @@
-// Home view: static scan form shell. The Scan Flow wave wires submit -> POST
-// /api/v1/scans and the polling redirect; keep the form ids and field names.
+// Home view: scan form, recent scans and the probabilistic disclaimer.
+//
+// Submit flow: validate locally -> POST /api/v1/scans -> remember the scan in
+// localStorage -> route to the polling view. Errors are reported without
+// leaving the page, and the submit button is always restored.
 
-import { alert, card, el } from "../components.js";
+import { createScan } from "../api.js";
+import { alert, badge, card, el, empty } from "../components.js";
+import { clearRecent, loadRecent, saveRecent } from "../state.js";
 
+const USERNAME_RE = /^[A-Za-z0-9_][A-Za-z0-9_-]*$/;
+const USERNAME_MAX = 30;
 const MAX_GAMES = [10, 20, 30, 40, 50];
+const SPEEDS = ["blitz", "rapid"];
+const SUBMIT_LABEL = "Запустить проверку";
+
+const STATUS_META = {
+  queued: { label: "в очереди", kind: "neutral" },
+  fetching: { label: "скачиваем", kind: "blue" },
+  analyzing: { label: "анализ", kind: "blue" },
+  scoring: { label: "скоринг", kind: "blue" },
+  explaining: { label: "вердикт", kind: "blue" },
+  completed: { label: "готово", kind: "good" },
+  failed: { label: "ошибка", kind: "bad" },
+};
+
+const DATE_FORMATTER = (() => {
+  try {
+    return new Intl.DateTimeFormat("ru-RU", {
+      day: "numeric",
+      month: "short",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  } catch {
+    return null;
+  }
+})();
+
+function statusMeta(status) {
+  return STATUS_META[status] || { label: status || "неизвестно", kind: "neutral" };
+}
+
+function formatDate(iso) {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "";
+  if (DATE_FORMATTER) {
+    try {
+      return DATE_FORMATTER.format(date);
+    } catch {
+      // Fall through to a plain locale string.
+    }
+  }
+  try {
+    return date.toLocaleString("ru-RU");
+  } catch {
+    return iso;
+  }
+}
+
+/** Prefill from `#/?username=...`, written by the retry button on the scan view. */
+function prefillUsername() {
+  try {
+    const query = window.location.hash.split("?")[1] || "";
+    const value = new URLSearchParams(query).get("username") || "";
+    return value.trim().slice(0, USERNAME_MAX);
+  } catch {
+    return "";
+  }
+}
 
 function speedOption(value, label, checked) {
   return el(
     "label",
     { class: "seg-item" },
-    el("input", {
-      type: "radio",
-      name: "speed",
-      value,
-      checked: checked || null,
-    }),
+    el("input", { type: "radio", name: "speed", value, checked: checked || null }),
     el("span", {}, label),
   );
 }
 
+function setFieldError(input, messageNode, message) {
+  if (messageNode) {
+    messageNode.textContent = message || "";
+    messageNode.hidden = !message;
+  }
+  if (input) {
+    if (message) input.setAttribute("aria-invalid", "true");
+    else input.removeAttribute("aria-invalid");
+  }
+}
+
+function submitErrorMessage(error) {
+  const status = Number(error?.status) || 0;
+  const message = typeof error?.message === "string" ? error.message.trim() : "";
+
+  if (status === 422) {
+    return message || "Сервер отклонил параметры запроса. Проверьте ник, число партий и контроль.";
+  }
+  if (status === 503) return "Очередь переполнена. Попробуйте через минуту.";
+  if (status === 0) return "Сервер недоступен. Проверьте подключение и попробуйте ещё раз.";
+  return message || "Не удалось запустить проверку. Попробуйте ещё раз.";
+}
+
 function buildForm() {
-  const form = el("form", {
-    id: "scan-form",
-    class: "scan-form",
+  const formAlert = el("div", { class: "form-alert" });
+
+  const usernameInput = el("input", {
+    id: "username",
+    name: "username",
+    type: "text",
+    required: true,
+    maxlength: String(USERNAME_MAX),
+    placeholder: "lichess nick",
     autocomplete: "off",
-    novalidate: true,
+    spellcheck: "false",
+    "aria-describedby": "username-help username-error",
+    value: prefillUsername(),
+  });
+  const usernameError = el("p", {
+    class: "form-help",
+    id: "username-error",
+    hidden: true,
   });
 
-  form.append(
-    el(
-      "div",
-      { class: "form-group" },
-      el("label", { for: "username" }, "Ник на Lichess"),
-      el("input", {
-        id: "username",
-        name: "username",
-        type: "text",
-        required: true,
-        maxlength: "30",
-        placeholder: "например, DrNykterstein",
-        autocomplete: "off",
-        spellcheck: "false",
-        "aria-describedby": "username-help",
-      }),
-      el(
-        "p",
-        { class: "form-help", id: "username-help" },
-        "Публичный профиль Lichess. Регистрация и доступ к аккаунту не нужны.",
-      ),
-    ),
-    el(
-      "fieldset",
-      { class: "form-group" },
-      el("legend", {}, "Контроль времени"),
-      el(
-        "div",
-        { class: "segmented" },
-        speedOption("blitz", "Блиц", true),
-        speedOption("rapid", "Рапид", false),
-      ),
-    ),
-    el(
-      "div",
-      { class: "form-row" },
-      el(
-        "div",
-        { class: "form-group", style: { flex: "0 1 180px" } },
-        el("label", { for: "max-games" }, "Сколько партий"),
-        el(
-          "select",
-          { id: "max-games", name: "max_games" },
-          MAX_GAMES.map((count) =>
-            el("option", { value: String(count), selected: count === 30 || null }, String(count)),
-          ),
-        ),
-      ),
-      el(
-        "div",
-        { class: "form-group", style: { flex: "1 1 240px", alignSelf: "flex-end" } },
-        el(
-          "label",
-          { class: "checkbox", for: "rated-only" },
-          el("input", { id: "rated-only", type: "checkbox", name: "rated_only", checked: true }),
-          "Только рейтинговые партии",
-        ),
-      ),
-    ),
-    el(
-      "div",
-      { class: "form-actions" },
-      el("button", { type: "submit", class: "btn btn-primary" }, "Запустить проверку"),
-      el("a", { class: "btn btn-ghost", href: "#/methodology" }, "Как считается риск"),
-    ),
+  const usernameGroup = el(
+    "div",
+    { class: "form-group" },
+    el("label", { for: "username" }, "Ник на Lichess"),
+    usernameInput,
     el(
       "p",
-      { class: "form-note" },
-      "Визуальный каркас: отправка формы подключится в следующем коммите.",
+      { class: "form-help", id: "username-help" },
+      "Публичный профиль Lichess. Регистрация и доступ к аккаунту не нужны.",
+    ),
+    usernameError,
+  );
+
+  const speedInputs = [speedOption("blitz", "Блиц", true), speedOption("rapid", "Рапид", false)];
+  const speedError = el("p", { class: "form-help", id: "speed-error", hidden: true });
+  const speedGroup = el(
+    "fieldset",
+    { class: "form-group" },
+    el("legend", {}, "Контроль времени"),
+    el("div", { class: "segmented" }, speedInputs),
+    speedError,
+  );
+
+  const maxGamesSelect = el(
+    "select",
+    { id: "max-games", name: "max_games" },
+    MAX_GAMES.map((count) =>
+      el("option", { value: String(count), selected: count === 30 || null }, String(count)),
+    ),
+  );
+  const maxGamesError = el("p", {
+    class: "form-help",
+    id: "max-games-error",
+    hidden: true,
+  });
+  const maxGamesGroup = el(
+    "div",
+    { class: "form-group", style: { flex: "0 1 180px" } },
+    el("label", { for: "max-games" }, "Сколько партий"),
+    maxGamesSelect,
+    maxGamesError,
+  );
+
+  const ratedOnlyInput = el("input", {
+    id: "rated-only",
+    type: "checkbox",
+    name: "rated_only",
+    checked: true,
+  });
+  const ratedGroup = el(
+    "div",
+    { class: "form-group", style: { flex: "1 1 240px", alignSelf: "flex-end" } },
+    el(
+      "label",
+      { class: "checkbox", for: "rated-only" },
+      ratedOnlyInput,
+      "Только рейтинговые партии",
     ),
   );
 
-  let stubNoticeShown = false;
-  form.addEventListener("submit", (event) => {
+  const submitButton = el(
+    "button",
+    { type: "submit", class: "btn btn-primary" },
+    SUBMIT_LABEL,
+  );
+
+  const form = el(
+    "form",
+    {
+      id: "scan-form",
+      class: "scan-form",
+      autocomplete: "off",
+      novalidate: true,
+    },
+    formAlert,
+    usernameGroup,
+    speedGroup,
+    el("div", { class: "form-row" }, maxGamesGroup, ratedGroup),
+    el(
+      "div",
+      { class: "form-actions" },
+      submitButton,
+      el("a", { class: "btn btn-ghost", href: "#/methodology" }, "Как считается риск"),
+    ),
+    el("p", { class: "form-note" }, "Обычно занимает 1–2 минуты. Вкладку можно не закрывать."),
+  );
+
+  const clearErrors = () => {
+    formAlert.replaceChildren();
+    setFieldError(usernameInput, usernameError, "");
+    setFieldError(maxGamesSelect, maxGamesError, "");
+    setFieldError(null, speedError, "");
+  };
+
+  usernameInput.addEventListener("input", () => {
+    setFieldError(usernameInput, usernameError, "");
+  });
+  maxGamesSelect.addEventListener("change", () => {
+    setFieldError(maxGamesSelect, maxGamesError, "");
+  });
+  for (const radio of form.querySelectorAll('input[name="speed"]')) {
+    radio.addEventListener("change", () => setFieldError(null, speedError, ""));
+  }
+
+  let submitting = false;
+
+  form.addEventListener("submit", async (event) => {
     event.preventDefault();
-    // Stub for the Scan Flow wave: validate, submit, then route to #/scan/<id>.
-    const username = form.querySelector("#username");
-    if (username && !username.value.trim()) {
-      username.setAttribute("aria-invalid", "true");
-      username.reportValidity?.();
-      username.focus();
+    if (submitting) return;
+    clearErrors();
+
+    const username = usernameInput.value.trim();
+    const maxGames = Number(maxGamesSelect.value);
+    const checkedSpeed = form.querySelector('input[name="speed"]:checked');
+    const speed = checkedSpeed ? checkedSpeed.value : "";
+    const ratedOnly = ratedOnlyInput.checked;
+
+    const errors = [];
+    if (!username) {
+      errors.push({ input: usernameInput, node: usernameError, message: "Укажите ник на Lichess." });
+    } else if (!USERNAME_RE.test(username)) {
+      errors.push({
+        input: usernameInput,
+        node: usernameError,
+        message: "Ник может содержать латинские буквы, цифры, дефис и подчёркивание.",
+      });
+    }
+    if (!Number.isInteger(maxGames) || maxGames < 10 || maxGames > 50) {
+      errors.push({
+        input: maxGamesSelect,
+        node: maxGamesError,
+        message: "Выберите от 10 до 50 партий.",
+      });
+    }
+    if (!SPEEDS.includes(speed)) {
+      errors.push({ input: null, node: speedError, message: "Выберите блиц или рапид." });
+    }
+
+    if (errors.length) {
+      for (const error of errors) setFieldError(error.input, error.node, error.message);
+      formAlert.replaceChildren(
+        alert("Проверьте выделенные поля и попробуйте снова.", "error", {
+          title: "Форма заполнена неверно",
+        }),
+      );
+      (errors[0].input || form).focus?.();
       return;
     }
-    username?.removeAttribute("aria-invalid");
-    if (!stubNoticeShown) {
-      stubNoticeShown = true;
-      const notice = alert(
-        "Форма пока не отправляет запрос: логика сканирования появится в следующем коммите.",
-        "info",
-        { title: "Статический предпросмотр" },
+
+    submitting = true;
+    submitButton.disabled = true;
+    submitButton.textContent = "Запускаем…";
+    submitButton.setAttribute("aria-busy", "true");
+    form.setAttribute("aria-busy", "true");
+
+    try {
+      const response = await createScan({ username, maxGames, speed, ratedOnly });
+      const scanId = typeof response?.scan_id === "string" ? response.scan_id : "";
+      if (!scanId) throw new Error("Сервер не вернул идентификатор скана.");
+
+      saveRecent({
+        scanId,
+        username,
+        createdAt: new Date().toISOString(),
+        status: typeof response?.status === "string" ? response.status : "queued",
+      });
+      // The router replaces this view; keep the button disabled to avoid a
+      // second POST while the hash change is processed.
+      window.location.hash = `#/scan/${encodeURIComponent(scanId)}`;
+    } catch (error) {
+      submitting = false;
+      submitButton.disabled = false;
+      submitButton.textContent = SUBMIT_LABEL;
+      submitButton.removeAttribute("aria-busy");
+      form.setAttribute("aria-busy", "false");
+      formAlert.replaceChildren(
+        alert(submitErrorMessage(error), "error", { title: "Не удалось запустить проверку" }),
       );
-      notice.classList.add("form-stub-note");
-      form.append(notice);
     }
   });
 
   return form;
 }
 
-function feature(title, text) {
-  return el("section", { class: "card feature" }, el("h3", {}, title), el("p", {}, text));
+function recentItem(entry) {
+  const meta = statusMeta(entry.status);
+  return el(
+    "li",
+    {},
+    el(
+      "a",
+      {
+        href: `#/scan/${encodeURIComponent(entry.scanId)}`,
+        "aria-label": `Открыть скан ${entry.username}`,
+      },
+      entry.username,
+    ),
+    " ",
+    badge(meta.label, meta.kind),
+    " ",
+    el("span", { class: "muted small" }, formatDate(entry.createdAt)),
+  );
+}
+
+function buildRecentCard(onClear) {
+  const entries = loadRecent();
+  const actions = entries.length
+    ? el("button", { type: "button", class: "btn btn-ghost btn-sm", onclick: onClear }, "Очистить")
+    : null;
+  const body = entries.length
+    ? el("ul", { class: "list" }, entries.map((entry) => recentItem(entry)))
+    : empty({
+        title: "Пока нет проверок",
+        text: "Запустите первую проверку — она появится в этом списке.",
+      });
+
+  return card(
+    {
+      title: "Недавние проверки",
+      subtitle: "Хранятся только в этом браузере.",
+      actions,
+    },
+    body,
+  );
+}
+
+function recentSection() {
+  const host = el("div");
+  const refresh = () => {
+    host.replaceChildren(
+      buildRecentCard(() => {
+        clearRecent();
+        refresh();
+      }),
+    );
+  };
+  refresh();
+  return host;
 }
 
 export async function renderHome(root) {
@@ -159,7 +391,6 @@ export async function renderHome(root) {
         el(
           "div",
           { class: "hero-actions" },
-          el("a", { class: "btn btn-secondary", href: "#/scan/demo/result" }, "Посмотреть демо-вердикт"),
           el("a", { class: "btn btn-ghost", href: "#/methodology" }, "Методика и ограничения"),
         ),
       ),
@@ -172,26 +403,9 @@ export async function renderHome(root) {
         buildForm(),
       ),
     ),
-    el(
-      "section",
-      { class: "grid grid-3" },
-      feature(
-        "Только публичные данные",
-        "Скан читает открытые партии через Lichess API. Приватные данные, cookies и доступ к аккаунту не используются.",
-      ),
-      feature(
-        "Прозрачные признаки",
-        "Доля совпадений с top-1/9/15 Stockfish, средний CPL, разброс оценки и время на ход. Пороги и метрики опубликованы.",
-      ),
-      feature(
-        "Сигнал, а не приговор",
-        "Результат не доказывает читерство и не предназначен для автомодерации. Ложноположительные срабатывания возможны.",
-      ),
-    ),
-    alert(
-      "Сервис показывает статистическую вероятность машиноподобной игры на выбранной выборке. Он не устанавливает факт нарушения правил.",
-      "warn",
-      { title: "Как читать результат" },
-    ),
+    recentSection(),
+    alert("Это вероятностный сигнал, не доказательство читерства", "warn", {
+      title: "Как читать результат",
+    }),
   );
 }
