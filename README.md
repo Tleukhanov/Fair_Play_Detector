@@ -26,8 +26,10 @@
 | **Фронтенд** | ✅ статический no-build UI на `/app/` | `apps/web/` |
 | **Maia** | ❌ не подключена (не входит в inference) | — |
 
-Проверки в локальном окружении: **163 passed, 1 skipped**, `ruff` и `mypy`
-чистые; CI-workflow добавлен (Python 3.12 + Stockfish + ruff/mypy/pytest).
+Проверки в локальном окружении: **164 passed** (163 + smoke с локальным
+артефактом), `ruff` и `mypy` чистые. В CI — **163 passed, 1 skipped**
+(smoke-тест скипается без gitignored-артефакта). CI-workflow: Python 3.12 +
+Stockfish + ruff/mypy/pytest.
 
 ---
 
@@ -314,7 +316,7 @@ python -m packages.ml.train \
 ### Тесты и линтеры
 
 ```bash
-python -m pytest -q                          # 117 passed (smoke skip без артефакта)
+python -m pytest -q                          # 164 passed (163 + smoke с артефактом)
 python -m ruff check apps packages tests scripts
 python -m mypy                               # Success: no issues found in 58 source files
 ```
