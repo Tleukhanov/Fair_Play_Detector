@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="api-base" content="/api/v1">
+  <meta name="description" content="Вероятностный анализ публичных партий Lichess на признаки машинной игры. Статистический сигнал, а не доказательство читерства.">
+  <meta name="theme-color" content="#e8e5e2">
+  <title>fair play detector — проверка партий Lichess</title>
+  <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="styles.css?v=1">
+  <script>
+    // Apply the stored/system theme before first paint to avoid a light flash.
+    (function () {
+      try {
+        var stored = localStorage.getItem("theme");
+        var theme = stored === "dark" || stored === "light"
+          ? stored
+          : (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+        document.documentElement.dataset.theme = theme;
+      } catch (error) {
+        document.documentElement.dataset.theme = "light";
+      }
+    })();
+  </script>
+</head>
+<body>
+  <a class="skip-link" href="#app">К содержанию</a>
+
+  <header class="topbar">
+    <div class="topbar-inner">
+      <a class="brand" href="#/" aria-label="fair play — на главную">
+        <img class="brand-logo" src="assets/logo.svg" alt="" width="22" height="22">
+        <span class="brand-name">fair play</span>
+        <span class="brand-tag">detector</span>
+      </a>
+      <nav class="nav" aria-label="Основная навигация">
+        <a href="#/" data-nav="home">Проверка</a>
+        <a href="#/methodology" data-nav="methodology">Методология</a>
+        <a class="nav-external" href="https://github.com/Tleukhanov/Fair_Play_Detector" target="_blank" rel="noopener noreferrer">GitHub <span aria-hidden="true">↗</span></a>
+      </nav>
+      <div class="topbar-right">
+        <button type="button" class="theme-toggle" data-theme-toggle aria-label="Тёмная тема" title="Тёмная тема">
+          <span aria-hidden="true">☾</span>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <main id="app" class="page" aria-live="polite"></main>
+
+  <noscript>
+    <section class="page boot-fallback" aria-labelledby="boot-title">
+      <div class="card">
+        <h1 id="boot-title">fair play detector</h1>
+        <p class="muted">Интерфейс работает на JavaScript. Ниже — статическая форма без отправки: включите JavaScript, чтобы запускать проверки.</p>
+        <form id="scan-form" class="scan-form" autocomplete="off">
+          <div class="form-group">
+            <label for="fallback-username">Ник на Lichess</label>
+            <input id="fallback-username" name="username" type="text" maxlength="30" placeholder="например, DrNykterstein">
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label for="fallback-max-games">Сколько партий</label>
+              <select id="fallback-max-games" name="max_games">
+                <option value="10">10</option>
+                <option value="20">20</option>
+                <option value="30" selected>30</option>
+                <option value="40">40</option>
+                <option value="50">50</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label class="checkbox"><input type="checkbox" name="rated_only" checked> Только рейтинговые партии</label>
+            </div>
+          </div>
+          <button class="btn btn-primary" type="button" disabled>Запустить проверку</button>
+        </form>
+      </div>
+    </section>
+  </noscript>
+
+  <footer class="footer">
+    <p class="footer-main">Результат — статистический сигнал для дополнительной проверки, <strong>не является доказательством читерства</strong> и не основание для автомодерации.</p>
+    <p class="footer-links">
+      <a href="https://github.com/Tleukhanov/Fair_Play_Detector" target="_blank" rel="noopener noreferrer">GitHub</a>
+      <span aria-hidden="true">·</span>
+      <a href="https://lichess.org" target="_blank" rel="noopener noreferrer">Lichess</a>
+      <span aria-hidden="true">·</span>
+      <a href="#/methodology">Методология</a>
+    </p>
+    <p class="footer-meta">Данные Lichess используются только в объёме публичного API. Проект не связан с Lichess.</p>
+  </footer>
+
+  <script type="module" src="js/app.js?v=1"></script>
+</body>
+</html>

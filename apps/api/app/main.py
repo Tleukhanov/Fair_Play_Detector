@@ -3,8 +3,11 @@
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
+from fastapi.responses import RedirectResponse
+from fastapi.staticfiles import StaticFiles
 
 from packages.chess_analysis import StockfishEngine
 from packages.ingest import LichessClient
@@ -21,6 +24,9 @@ from .workers.store import ScanWorkerStore, reap_stale_scans
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
+
+#: Static no-build frontend, served from the same origin as the API.
+WEB_DIR = Path(__file__).resolve().parents[3] / "apps" / "web"
 
 
 def _create_scan_job() -> ScanJob:
@@ -73,6 +79,14 @@ app = FastAPI(
     lifespan=lifespan,
 )
 app.include_router(scans_router)
+app.mount("/app", StaticFiles(directory=WEB_DIR, html=True), name="web")
+
+
+@app.get("/", include_in_schema=False)
+def index() -> RedirectResponse:
+    """Send the bare origin to the static frontend shell."""
+
+    return RedirectResponse("/app/")
 
 
 @app.get("/health", tags=["system"])
