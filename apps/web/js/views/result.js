@@ -1,54 +1,91 @@
-// Result view: static verdict preview with clearly labelled demo data.
-// The Result wave replaces the sample values with GET /scans/{id}/verdict.
+// Result view: real player-level verdict plus the paginated games table.
+//
+// Data comes from GET /scans/{id}/verdict and GET /scans/{id}/games. All API
+// values are rendered as text nodes through components.js; raw HTML is never
+// injected.
 
+import { ApiError, getGames, getVerdict } from "../api.js";
 import {
   alert,
   badge,
   card,
   el,
-  evidenceRow,
-  riskBadge,
+  empty,
+  pagination,
   riskMeter,
+  skeletonRows,
+  tableWrap,
 } from "../components.js";
+import {
+  evidenceLabel,
+  formatCi,
+  formatCpl,
+  formatDateTimeUtc,
+  formatEvidenceBaseline,
+  formatEvidenceValue,
+  formatPercent,
+  formatResult,
+  formatScore,
+  formatWeight,
+  riskClass,
+  riskLabel,
+} from "../format.js";
 
-const DEMO_SCORE = 0.36;
-const DEMO_EVIDENCE = [
-  { code: "top_1_match_rate", label: "Совпадение с top-1", value: 0.62, baseline: 0.55, weight: 0.28, unit: "%" },
-  { code: "match_sf9", label: "Совпадение с top-9", value: 0.71, baseline: 0.66, weight: 0.18, unit: "%" },
-  { code: "mean_centipawn_loss", label: "Средний CPL", value: 24, baseline: 31, weight: 0.22, unit: "cp" },
-  { code: "move_thinking_time", label: "Время на ход", value: 7.2, baseline: 6.4, weight: 0.16, unit: "s" },
-  { code: "eval_swing", label: "Разброс оценки", value: 0.18, baseline: 0.21, weight: 0.16 },
+const PAGE_SIZE = 20;
+
+const STATIC_LIMITATIONS = [
+  "Это вероятностный сигнал, а не доказательство читерства и не основание для автомодерации.",
+  "Когорта маленькая: 49 игроков, тест — 10 игроков / 198 партий; интервалы широкие.",
+  "Prevalence в тесте 41.4%, на реальном трафике — меньше 1%; precision не переносится.",
+  "Maia/Allie не подключены к inference, поэтому maia_divergence обычно пуст.",
+  "Преимущество над простой эвристикой top-1 на этой когорте не доказано.",
 ];
 
-const DEMO_LIMITATIONS = [
-  "Когорта обучения маленькая: 49 игроков, тест — 10 игроков / 198 партий. Интервалы широкие.",
-  "Prevalence в ChessFraud — 40.3%; precision с реального трафика (<1%) не переносится.",
-  "Модель не показала доказанного превосходства над эвристикой top-1 на этой выборке.",
-  "Результат не является доказательством читерства и не предназначен для автомодерации.",
-];
+const RISK_WORDS = {
+  low_risk: "низкий",
+  suspicious: "подозрительный",
+  high_risk: "высокий",
+};
 
-export async function renderResult(root, params = {}) {
-  const scanId = params.scanId || "demo";
-  const backHref = `#/scan/${encodeURIComponent(scanId)}`;
-  const gameHref = `#/scan/${encodeURIComponent(scanId)}/game/demo-game-1`;
+function clamp(value, min, max) {
+  return Math.min(max, Math.max(min, value));
+}
 
-  root.append(
-    el(
-      "nav",
-      { class: "breadcrumbs", "aria-label": "Навигация" },
-      el("a", { href: "#/" }, "Проверка"),
-      el("span", { class: "sep", "aria-hidden": "true" }, "/"),
-      el("a", { href: backHref }, "Скан"),
-      el("span", { class: "sep", "aria-hidden": "true" }, "/"),
-      el("span", {}, "Вердикт"),
-    ),
-    el(
+function numberOrNull(value) {
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
+  if (typeof value === "string" && value.trim() !== "") {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+function gameHash(scanId, gameId) {
+  return `#/scan/${encodeURIComponent(scanId)}/game/${encodeURIComponent(gameId)}`;
+}
+
+function safeHttpUrl(value) {
+  if (typeof value !== "string" || value.trim() === "") return null;
+  try {
+    const url = new URL(value, window.location.href);
+    if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+    return url.href;
+  } catch {
+    return null;
+  }
+}
+
+function pageHeader(scanId) {
+  const eyebrow = el("p", { class: "eyebrow" }, "player-level");
+  return {
+    eyebrow,
+    node: el(
       "div",
       { class: "page-head page-head-row" },
       el(
         "div",
         {},
-        el("p", { class: "eyebrow" }, "player-level · chessfraud-v1"),
+        eyebrow,
         el("h1", {}, "Результат проверки"),
         el(
           "p",
@@ -59,19 +96,201 @@ export async function renderResult(root, params = {}) {
       el(
         "div",
         { class: "head-actions" },
-        badge("демо · предпросмотр", "demo"),
-        riskBadge("low_risk"),
+        el(
+          "a",
+          { class: "btn btn-secondary btn-sm", href: `#/scan/${encodeURIComponent(scanId)}` },
+          "К прогрессу скана",
+        ),
       ),
     ),
-    alert(
-      "Это демонстрационный макет с вымышленными числами. Он показывает структуру вердикта; реальные значения подставит следующий этап.",
-      "warn",
-      { title: "Предпросмотр интерфейса" },
+  };
+}
+
+function breadcrumbs(scanId) {
+  return el(
+    "nav",
+    { class: "breadcrumbs", "aria-label": "Навигация" },
+    el("a", { href: "#/" }, "Проверка"),
+    el("span", { class: "sep", "aria-hidden": "true" }, "/"),
+    el("a", { href: `#/scan/${encodeURIComponent(scanId)}` }, "Скан"),
+    el("span", { class: "sep", "aria-hidden": "true" }, "/"),
+    el("span", {}, "Вердикт"),
+  );
+}
+
+function verdictSkeleton() {
+  return card(
+    { title: "Вердикт", subtitle: "Загружаем результат скана…" },
+    skeletonRows(3, 3),
+    el("p", { class: "skeleton-caption" }, "Score, интервал и признаки появятся здесь."),
+  );
+}
+
+function gamesSkeleton() {
+  return card(
+    { title: "Партии", subtitle: "Загружаем список партий…" },
+    skeletonRows(6, 4),
+    el("p", { class: "skeleton-caption" }, "Таблица партий и пагинация появятся здесь."),
+  );
+}
+
+function errorCard(title, error, retry) {
+  const message =
+    error instanceof Error && error.message
+      ? error.message
+      : "Неизвестная ошибка. Попробуйте ещё раз.";
+  return card(
+    { title },
+    alert(message, "error", { title: "Ошибка загрузки" }),
+    el(
+      "div",
+      { class: "form-actions" },
+      el(
+        "button",
+        { type: "button", class: "btn btn-secondary", onclick: () => retry() },
+        "Повторить",
+      ),
     ),
+  );
+}
+
+function pendingCard(scanId) {
+  return card(
+    { title: "Вердикт ещё не готов" },
+    alert(
+      "Скан ещё выполняется или вердикт пока недоступен. Открываем страницу скана…",
+      "info",
+      { title: "Вердикт ещё не готов" },
+    ),
+    el(
+      "div",
+      { class: "form-actions" },
+      el(
+        "a",
+        { class: "btn btn-secondary btn-sm", href: `#/scan/${encodeURIComponent(scanId)}` },
+        "К скану",
+      ),
+    ),
+  );
+}
+
+function evidenceRow(item) {
+  const code = typeof item?.code === "string" ? item.code : "";
+  const value = numberOrNull(item?.value);
+  const baseline = numberOrNull(item?.baseline);
+  const scale = Math.max(Math.abs(value || 0), Math.abs(baseline || 0), 1e-6);
+  const fillPercent = value === null ? 0 : clamp((Math.abs(value) / scale) * 100, 0, 100);
+  const baselinePercent =
+    baseline === null ? 0 : clamp((Math.abs(baseline) / scale) * 100, 0, 100);
+  return el(
+    "div",
+    { class: "evidence-row" },
+    el(
+      "div",
+      { class: "evidence-main" },
+      el(
+        "div",
+        { class: "evidence-head" },
+        el(
+          "span",
+          { class: "evidence-label" },
+          evidenceLabel(code, item?.label),
+          code ? el("span", { class: "evidence-code mono" }, code) : null,
+        ),
+        el("span", { class: "evidence-weight" }, `вес ${formatWeight(item?.weight)}`),
+      ),
+      el(
+        "div",
+        { class: "evidence-bar", "aria-hidden": "true" },
+        el("span", { class: "evidence-fill", style: { width: `${fillPercent}%` } }),
+        el("span", { class: "evidence-baseline", style: { left: `${baselinePercent}%` } }),
+      ),
+    ),
+    el(
+      "div",
+      { class: "evidence-values" },
+      el("span", { class: "evidence-value" }, formatEvidenceValue(code, value)),
+      el("span", { class: "evidence-base" }, `база ${formatEvidenceBaseline(code, baseline)}`),
+    ),
+  );
+}
+
+function russianSummary(verdict) {
+  const word = RISK_WORDS[verdict?.risk_level] || riskLabel(verdict?.risk_level).toLowerCase();
+  const score = formatScore(verdict?.risk_score);
+  const interval = formatCi(verdict?.confidence_interval);
+  const games = numberOrNull(verdict?.games_analyzed);
+  const parts = [`Риск: ${word}.`];
+  if (score !== "—") {
+    parts.push(
+      interval === "—" ? `Score ${score}.` : `Score ${score}, 95% ДИ ${interval}.`,
+    );
+  }
+  if (games !== null) {
+    parts.push(`Сигнал основан на ${Math.round(games)} партиях.`);
+  }
+  if (verdict?.risk_level === "suspicious" || verdict?.risk_level === "high_risk") {
+    parts.push("Стоит посмотреть отдельные партии и ширину интервала — это не приговор.");
+  } else {
+    parts.push("Это вероятностный сигнал, а не доказательство.");
+  }
+  return parts.join(" ");
+}
+
+function verdictCard(verdict) {
+  const evidence = Array.isArray(verdict?.evidence) ? verdict.evidence : [];
+  const rawLimitations = Array.isArray(verdict?.limitations)
+    ? verdict.limitations.filter((item) => typeof item === "string" && item.trim() !== "")
+    : [];
+  const games = numberOrNull(verdict?.games_analyzed);
+  const score = numberOrNull(verdict?.risk_score);
+
+  const evidenceCard = card(
+    {
+      title: "Признаки",
+      subtitle: "Вклад признаков в решение. База — среднее по когорте ChessFraud.",
+      actions: badge(`${evidence.length} признаков`, "neutral"),
+    },
+    evidence.length
+      ? el("div", { class: "evidence-list" }, evidence.map((item) => evidenceRow(item)))
+      : empty({
+          icon: null,
+          title: "Признаки недоступны",
+          text: "Для этого вердикта backend не вернул объяснений.",
+        }),
+    el(
+      "p",
+      { class: "table-note" },
+      "Полоса — наблюдение, вертикальная метка — база когорты. Ширина полосы относительна максимуму из двух значений.",
+    ),
+  );
+
+  const limitationsCard = card(
+    { title: "Ограничения", subtitle: "Что нельзя выводить из этого результата." },
+    el(
+      "ul",
+      { class: "list" },
+      STATIC_LIMITATIONS.map((text) => el("li", {}, text)),
+    ),
+    rawLimitations.length
+      ? el(
+          "details",
+          { class: "raw-details" },
+          el("summary", {}, "Ограничения из backend (EN)"),
+          el(
+            "ul",
+            { class: "list small details-body" },
+            rawLimitations.map((text) => el("li", {}, text)),
+          ),
+        )
+      : null,
+  );
+
+  return [
     card(
       {
         className: "verdict-card",
-        actions: badge("демо", "demo"),
+        actions: badge("завершено", "neutral"),
       },
       el(
         "div",
@@ -79,15 +298,19 @@ export async function renderResult(root, params = {}) {
         el(
           "div",
           { class: "verdict-user" },
-          el("h2", {}, "DrNykterstein"),
-          riskBadge("low_risk"),
+          el("h2", {}, verdict?.username || "Игрок"),
+          badge(riskLabel(verdict?.risk_level), riskClass(verdict?.risk_level)),
           el(
             "p",
             { class: "verdict-meta" },
-            "30 партий · blitz · только рейтинговые · модель chessfraud-v1",
+            [
+              games !== null ? `${Math.round(games)} партий` : null,
+              verdict?.model_version ? `модель ${verdict.model_version}` : null,
+            ]
+              .filter(Boolean)
+              .join(" · ") || "player-level",
           ),
         ),
-        el("span", { class: "badge badge-neutral" }, "завершено"),
       ),
       el(
         "div",
@@ -95,61 +318,175 @@ export async function renderResult(root, params = {}) {
         el(
           "div",
           { class: "metric" },
-          el("div", { class: "metric-value" }, DEMO_SCORE.toFixed(2)),
+          el("div", { class: "metric-value" }, formatScore(score)),
           el("div", { class: "metric-label" }, "риск, 0–1"),
           el("div", { class: "metric-note" }, "среднее по партиям"),
         ),
         el(
           "div",
           { class: "metric" },
-          el("div", { class: "metric-value mono" }, "0.30–0.43"),
+          el("div", { class: "metric-value mono" }, formatCi(verdict?.confidence_interval)),
           el("div", { class: "metric-label" }, "95% интервал"),
           el("div", { class: "metric-note" }, "bootstrap по партиям"),
         ),
         el(
           "div",
           { class: "metric" },
-          el("div", { class: "metric-value" }, "30"),
+          el("div", { class: "metric-value" }, games !== null ? String(Math.round(games)) : "—"),
           el("div", { class: "metric-label" }, "партий в выборке"),
-          el("div", { class: "metric-note" }, "10–50 допустимо"),
+          el("div", { class: "metric-note" }, "минимум 10"),
+        ),
+        el(
+          "div",
+          { class: "metric" },
+          el("div", { class: "metric-value" }, el("span", { class: "small" }, verdict?.model_version || "—")),
+          el("div", { class: "metric-label" }, "модель"),
+          el("div", { class: "metric-note" }, "game-level"),
         ),
       ),
-      riskMeter(DEMO_SCORE),
+      riskMeter(score ?? 0),
+      el("p", { class: "risk-summary" }, russianSummary(verdict)),
       el(
-        "p",
-        { class: "risk-summary" },
-        "Профиль ближе к низкому риску: совпадения ходов и потеря оценки не выходят за пределы когорты. ",
-        "Интервал и ограничения ниже важнее одного числа — трактовать результат как обвинение нельзя.",
+        "details",
+        { class: "raw-details" },
+        el("summary", {}, "Технический вывод модели (EN)"),
+        el(
+          "div",
+          { class: "details-body" },
+          el("p", { class: "small" }, verdict?.summary || "—"),
+        ),
       ),
     ),
-    card(
-      {
-        title: "Признаки",
-        subtitle: "Вклад признаков в решение. База — среднее по когорте ChessFraud.",
-        actions: el("span", { class: "badge badge-neutral" }, "5 признаков"),
-      },
-      el(
-        "div",
-        { class: "evidence-list" },
-        DEMO_EVIDENCE.map((item) => evidenceRow(item)),
-      ),
-      el(
-        "p",
-        { class: "table-note" },
-        "Полоса — наблюдение, вертикальная метка — база. Демо-значения не являются результатом реального скана.",
-      ),
-    ),
-    card(
-      {
-        title: "Ограничения",
-        subtitle: "Что нельзя выводить из этого результата.",
-      },
-      el(
-        "ul",
-        { class: "list" },
-        DEMO_LIMITATIONS.map((text) => el("li", {}, text)),
-      ),
-    ),
+    evidenceCard,
+    limitationsCard,
+  ];
+}
+
+function resultCell(value, userColor) {
+  const label = formatResult(value, userColor);
+  return label;
+}
+
+function sourceCell(sourceUrl) {
+  const href = safeHttpUrl(sourceUrl);
+  if (!href) return el("span", { class: "muted" }, "—");
+  return el(
+    "a",
+    {
+      href,
+      target: "_blank",
+      rel: "noopener noreferrer",
+      class: "link-quiet nowrap",
+    },
+    "Lichess ↗",
+  );
+}
+
+function gamesTable(items, scanId, total, page) {
+  const headers = [
+    { label: "Дата", className: "nowrap" },
+    "Результат",
+    "Контроль",
+    { label: "Ходы", className: "num" },
+    { label: "Top-1", className: "num" },
+    { label: "CPL", className: "num" },
+    { label: "Maia", className: "num" },
+    "Lichess",
+  ];
+  const rows = items.map((item) => [
+    formatDateTimeUtc(item?.played_at),
+    formatResult(item?.result, item?.user_color),
+    item?.speed || "—",
+    el("span", {}, numberOrNull(item?.move_count) !== null ? String(item.move_count) : "—"),
+    formatPercent(item?.top_move_match_rate, 0),
+    formatCpl(item?.mean_centipawn_loss),
+    numberOrNull(item?.maia_divergence) === null ? "—" : formatScore(item?.maia_divergence),
+    sourceCell(item?.source_url),
+  ]);
+
+  const wrap = tableWrap(headers, rows, {
+    className: "games-table",
+    caption: `Страница ${page} · всего ${total} партий`,
+  });
+  const table = wrap.querySelector("table");
+  if (table) {
+    const bodyRows = Array.from(table.tBodies[0]?.rows || []);
+    bodyRows.forEach((row, index) => {
+      const item = items[index];
+      if (!item || typeof item.game_id !== "string" || item.game_id === "") return;
+      const href = gameHash(scanId, item.game_id);
+      row.tabIndex = 0;
+      row.style.cursor = "pointer";
+      row.setAttribute("aria-label", `Открыть разбор партии ${item.game_id}`);
+      row.addEventListener("click", (event) => {
+        if (event.target instanceof Element && event.target.closest("a, button")) return;
+        window.location.hash = href;
+      });
+      row.addEventListener("keydown", (event) => {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault();
+        window.location.hash = href;
+      });
+    });
+  }
+  return wrap;
+}
+
+function gamesCard(data, scanId, requestPage, loadPage) {
+  const items = Array.isArray(data?.items) ? data.items : [];
+  const total = numberOrNull(data?.total) ?? items.length;
+  const page = numberOrNull(data?.page) ?? requestPage;
+  const pageSize = numberOrNull(data?.page_size) ?? PAGE_SIZE;
+
+  if (items.length === 0) {
+    return card(
+      { title: "Партии", actions: badge("0", "neutral") },
+      empty({
+        title: "Партий нет",
+        text: "В этом скане нет проанализированных партий. Вернитесь к скану или запустите новую проверку.",
+        action: el("a", { class: "btn btn-secondary btn-sm", href: "#/" }, "Новая проверка"),
+      }),
+    );
+  }
+
+  return card(
+    {
+      title: "Партии",
+      subtitle:
+        "По убыванию даты. Строка открывает разбор; ссылка Lichess — публичная партия. Maia не подключена, поэтому обычно «—».",
+      actions: badge(`${total}`, "neutral"),
+    },
+    gamesTable(items, scanId, total, page),
+    pagination({
+      page,
+      pageSize,
+      total,
+      onNavigate: (target) => loadPage(target),
+    }),
+  );
+}
+
+export async function renderResult(root, params = {}) {
+  const scanId = params.scanId;
+  if (typeof scanId !== "string" || scanId === "") {
+    root.append(
+      alert("В адресе нет идентификатора скана. Вернитесь на главную и запустите проверку.", "error", {
+        title: "Неверная ссылка",
+      }),
+    );
+    return;
+  }
+
+  const header = pageHeader(scanId);
+  const verdictSlot = el("div", { class: "verdict-slot" });
+  const gamesSlot = el("div", { class: "games-slot" });
+  const backHref = `#/scan/${encodeURIComponent(scanId)}`;
+
+  root.append(
+    breadcrumbs(scanId),
+    header.node,
+    verdictSlot,
+    gamesSlot,
     el(
       "div",
       { class: "card-footer", style: { borderTop: "0", paddingTop: "0", marginTop: "0" } },
@@ -157,9 +494,52 @@ export async function renderResult(root, params = {}) {
       el(
         "div",
         { class: "head-actions" },
-        el("a", { class: "btn btn-ghost", href: gameHref }, "Демо-партия"),
         el("a", { class: "btn btn-primary", href: "#/" }, "Новая проверка"),
       ),
     ),
   );
+
+  verdictSlot.append(verdictSkeleton());
+  gamesSlot.append(gamesSkeleton());
+
+  function redirectToScan() {
+    window.setTimeout(() => {
+      if (!verdictSlot.isConnected) return;
+      window.location.hash = `#/scan/${encodeURIComponent(scanId)}`;
+    }, 1400);
+  }
+
+  async function loadVerdict() {
+    verdictSlot.replaceChildren(verdictSkeleton());
+    try {
+      const verdict = await getVerdict(scanId);
+      if (!verdictSlot.isConnected) return;
+      header.eyebrow.textContent = verdict?.model_version
+        ? `player-level · ${verdict.model_version}`
+        : "player-level";
+      verdictSlot.replaceChildren(...verdictCard(verdict));
+    } catch (error) {
+      if (!verdictSlot.isConnected) return;
+      if (error instanceof ApiError && (error.status === 409 || error.status === 404)) {
+        verdictSlot.replaceChildren(pendingCard(scanId));
+        redirectToScan();
+        return;
+      }
+      verdictSlot.replaceChildren(errorCard("Вердикт недоступен", error, loadVerdict));
+    }
+  }
+
+  async function loadGames(page) {
+    gamesSlot.replaceChildren(gamesSkeleton());
+    try {
+      const data = await getGames(scanId, { page, pageSize: PAGE_SIZE });
+      if (!gamesSlot.isConnected) return;
+      gamesSlot.replaceChildren(gamesCard(data, scanId, page, loadGames));
+    } catch (error) {
+      if (!gamesSlot.isConnected) return;
+      gamesSlot.replaceChildren(errorCard("Не удалось загрузить партии", error, () => loadGames(page)));
+    }
+  }
+
+  await Promise.allSettled([loadVerdict(), loadGames(1)]);
 }
