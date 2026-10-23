@@ -13,6 +13,14 @@ class MLModel(StrEnum):
     XGBOOST = "xgboost"
 
 
+class ContributionDirection(StrEnum):
+    """Sign of a per-verdict feature contribution."""
+
+    SUPPORTS_RISK = "supports_risk"
+    REDUCES_RISK = "reduces_risk"
+    NEUTRAL = "neutral"
+
+
 class MLModelContract(BaseModel):
     """Strict JSON-compatible base for ML handoff contracts."""
 
@@ -56,13 +64,23 @@ class ScoringInput(MLModelContract):
 
 
 class FeatureEvidence(MLModelContract):
-    """One grounded explanation item returned by the numeric scorer."""
+    """One grounded explanation item returned by the numeric scorer.
+
+    ``contribution`` is a per-verdict signed attribution in the model's decision
+    space.  For the trained XGBoost model it is the mean SHAP contribution in
+    margin (log-odds) space; for the heuristic baseline it is the weighted delta
+    from the evidence baseline.  It is optional because not every model adapter
+    can produce a stable attribution.
+    """
 
     code: str = Field(min_length=1)
     label: str = Field(min_length=1)
     value: float
     baseline: float
     weight: float
+    contribution: float | None = None
+    contribution_share: float | None = None
+    direction: ContributionDirection | None = None
 
 
 class ScoreResult(MLModelContract):
