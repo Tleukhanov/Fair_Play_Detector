@@ -34,6 +34,7 @@ from typing import TYPE_CHECKING, Any
 
 from .baseline import BaselineScorer, InsufficientGamesError
 from .contracts import (
+    ContributionDirection,
     FeatureEvidence,
     ModelMetadata,
     RiskThresholds,
@@ -84,7 +85,19 @@ _REQUIRED_METADATA_KEYS: tuple[str, ...] = (
 
 
 class TrainedScorer:
-    """Calibrated game-level model adapter implementing :class:`Scorer`."""
+    """Calibrated game-level model adapter implementing :class:`Scorer`.
+
+    Evidence carries both the artifact's **global** feature importance and an
+    optional **per-verdict** contribution.  Contributions come from XGBoost's
+    ``pred_contribs=True`` (TreeSHAP) on the frozen base estimator, averaged over
+    the analysed games.  The serving artifact wraps that estimator in a
+    ``CalibratedClassifierCV``; the calibrator is a monotonic sigmoid, so the
+    contributions live in the base model's margin (log-odds) space.  They explain
+    *why the model leaned towards or away from risk for this verdict*, not the
+    size of a probability delta after calibration.  If the artifact is not a
+    usable XGBoost model, contributions stay ``None`` and behavior falls back to
+    global importance only.
+    """
 
     #: Same policy as the heuristic baseline: fewer games cannot be scored.
     minimum_games: int = BaselineScorer.minimum_games
@@ -107,6 +120,8 @@ class TrainedScorer:
         self._feature_importances = list(feature_importances)
         self._feature_baselines = dict(feature_baselines)
         self._artifact_metadata = dict(artifact_metadata)
+        #: Frozen base XGBoost estimator, if this artifact exposes one.
+        self._contribution_model = _base_xgboost_estimator(model)
         #: Verdict thresholds on the player-mean scale.  Falls back to the
         #: per-game contract only for artifacts predating player thresholds.
         self._player_thresholds = player_thresholds or metadata.thresholds
@@ -222,7 +237,7 @@ class TrainedScorer:
             risk_score=risk_score,
             confidence_interval=(lower, upper),
             games_analyzed=len(usable_games),
-            evidence=self._evidence(usable_games),
+            evidence=self._evidence(usable_games, vectors),
             model=self._metadata,
         )
 
@@ -251,14 +266,26 @@ class TrainedScorer:
         means.sort()
         return (_percentile(means, 0.025), _percentile(means, 0.975))
 
-    def _evidence(self, games: Sequence[GameAggregateFeatures]) -> list[FeatureEvidence]:
+    def _evidence(
+        self,
+        games: Sequence[GameAggregateFeatures],
+        vectors: Sequence[Sequence[float]],
+    ) -> list[FeatureEvidence]:
         values_by_game = [game_feature_values(game) for game in games]
         means: dict[str, float] = {}
         for name in GAME_FEATURE_NAMES:
             values = [row[name] for row in values_by_game]
             means[name] = sum(values) / len(values)
+        attribution = self._contributions(vectors)
         evidence = []
         for name, weight in self._feature_importances[: self.evidence_limit]:
+            contribution = None
+            share = None
+            direction = None
+            if attribution is not None:
+                contribution = attribution[0][name]
+                share = attribution[1][name]
+                direction = _direction(contribution)
             evidence.append(
                 FeatureEvidence(
                     code=f"GAME_{name.upper()}",
@@ -266,9 +293,98 @@ class TrainedScorer:
                     value=float(means[name]),
                     baseline=float(self._feature_baselines[name]),
                     weight=float(weight),
+                    contribution=contribution,
+                    contribution_share=share,
+                    direction=direction,
                 )
             )
         return evidence
+
+    def _contributions(
+        self,
+        vectors: Sequence[Sequence[float]],
+    ) -> tuple[dict[str, float], dict[str, float]] | None:
+        """Return mean per-feature margin contributions and normalized shares.
+
+        XGBoost ``pred_contribs`` returns one column per feature plus a trailing
+        bias/intercept column.  The bias is dropped before normalizing shares by
+        the sum of absolute mean contributions.  Any model/shape problem is
+        treated as "attribution unavailable" rather than failing the verdict.
+        """
+
+        if self._contribution_model is None or not vectors:
+            return None
+        try:
+            import numpy as np
+            import xgboost as xgb  # type: ignore[import-untyped]
+
+            matrix = np.asarray([list(vector) for vector in vectors], dtype=float)
+            try:
+                dmatrix = xgb.DMatrix(matrix, feature_names=list(GAME_FEATURE_NAMES))
+            except (TypeError, ValueError):
+                dmatrix = xgb.DMatrix(matrix)
+            raw = self._contribution_model.get_booster().predict(
+                dmatrix, pred_contribs=True
+            )
+            values = np.asarray(raw, dtype=float)
+            if values.ndim != 2 or values.shape[1] != len(GAME_FEATURE_NAMES) + 1:
+                return None
+            means = values.mean(axis=0)[: len(GAME_FEATURE_NAMES)]
+            if not np.all(np.isfinite(means)):
+                return None
+            total = float(np.abs(means).sum())
+            shares = np.abs(means) / total if total > 0.0 else np.zeros_like(means)
+            return (
+                {
+                    name: float(value)
+                    for name, value in zip(GAME_FEATURE_NAMES, means, strict=True)
+                },
+                {
+                    name: float(value)
+                    for name, value in zip(GAME_FEATURE_NAMES, shares, strict=True)
+                },
+            )
+        except Exception:  # noqa: BLE001 - attribution must never fail a verdict
+            return None
+
+
+def _base_xgboost_estimator(model: Any) -> Any:
+    """Unwrap ``CalibratedClassifierCV(FrozenEstimator(XGBClassifier))``.
+
+    The serving artifact nests the frozen base estimator at
+    ``calibrated_classifiers_[0].estimator.estimator`` (newer scikit-learn) or
+    ``calibrated_classifiers_[0].base_estimator`` (older layouts).  Returns the
+    inner estimator only when it actually exposes ``get_booster``; otherwise the
+    artifact is treated as non-XGBoost and no contributions are emitted.
+    """
+
+    if model is None:
+        return None
+    if hasattr(model, "get_booster"):
+        return model
+    classifiers = getattr(model, "calibrated_classifiers_", None)
+    if not isinstance(classifiers, Sequence):
+        return None
+    for calibrated in classifiers:
+        candidate = getattr(calibrated, "estimator", None)
+        if candidate is None:
+            candidate = getattr(calibrated, "base_estimator", None)
+        inner = getattr(candidate, "estimator", None)
+        if inner is not None:
+            candidate = inner
+        if candidate is not None and hasattr(candidate, "get_booster"):
+            return candidate
+    return None
+
+
+def _direction(
+    contribution: float, *, tolerance: float = 1e-12
+) -> ContributionDirection:
+    if contribution > tolerance:
+        return ContributionDirection.SUPPORTS_RISK
+    if contribution < -tolerance:
+        return ContributionDirection.REDUCES_RISK
+    return ContributionDirection.NEUTRAL
 
 
 def _player_thresholds(

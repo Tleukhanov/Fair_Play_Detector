@@ -4,6 +4,7 @@ from collections.abc import Iterable
 from math import sqrt
 
 from .contracts import (
+    ContributionDirection,
     FeatureEvidence,
     ModelMetadata,
     RiskThresholds,
@@ -17,7 +18,14 @@ class InsufficientGamesError(ValueError):
 
 
 class BaselineScorer:
-    """Conservative heuristic scorer with explicit, reviewable weights."""
+    """Conservative heuristic scorer with explicit, reviewable weights.
+
+    Each evidence item also carries a signed ``contribution`` relative to the
+    evidence baseline: ``weight * (signal - baseline_signal)``.  This keeps the
+    explanation causal in the heuristic's own scoring rule while leaving the risk
+    score itself unchanged.  Contributions are heuristic deltas on the score
+    scale, not calibrated probabilities.
+    """
 
     minimum_games = 10
 
@@ -45,7 +53,7 @@ class BaselineScorer:
             + 0.20 * time_signal
             + 0.15 * maia_signal
         )
-        evidence = [
+        evidence: list[FeatureEvidence] = [
             FeatureEvidence(
                 code="HIGH_TOP_MOVE_RATE",
                 label="High top-1 move match rate",
@@ -75,6 +83,7 @@ class BaselineScorer:
                 weight=0.15,
             ),
         ]
+        evidence = _with_contributions(evidence)
         return ScoreResult(
             risk_level=_risk_level(risk_score, self._metadata.thresholds),
             risk_score=risk_score,
@@ -83,6 +92,45 @@ class BaselineScorer:
             evidence=evidence,
             model=self._metadata,
         )
+
+
+def _with_contributions(evidence: list[FeatureEvidence]) -> list[FeatureEvidence]:
+    """Attach weighted deltas from the evidence baseline.
+
+    The centipawn-loss evidence stores raw CPL, while the score uses inverse CPL
+    ``1 - cpl / 100``; the other evidence values are already the scored signal.
+    """
+
+    contributions: list[float] = []
+    for item in evidence:
+        if item.code == "LOW_CENTIPAWN_LOSS":
+            signal = 1.0 - (item.value / 100.0)
+            baseline_signal = 1.0 - (item.baseline / 100.0)
+        else:
+            signal = item.value
+            baseline_signal = item.baseline
+        contributions.append(item.weight * (signal - baseline_signal))
+    total = sum(abs(value) for value in contributions)
+    enriched: list[FeatureEvidence] = []
+    for item, contribution in zip(evidence, contributions, strict=True):
+        share = abs(contribution) / total if total > 0.0 else 0.0
+        direction = (
+            ContributionDirection.SUPPORTS_RISK
+            if contribution > 0.0
+            else ContributionDirection.REDUCES_RISK
+            if contribution < 0.0
+            else ContributionDirection.NEUTRAL
+        )
+        enriched.append(
+            item.model_copy(
+                update={
+                    "contribution": contribution,
+                    "contribution_share": share,
+                    "direction": direction,
+                }
+            )
+        )
+    return enriched
 
 
 def _mean(values: Iterable[float]) -> float:
