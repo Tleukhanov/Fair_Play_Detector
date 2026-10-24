@@ -15,7 +15,7 @@ const STAGE_LABELS = {
   fetching: "Скачиваем партии",
   analyzing: "Анализируем Stockfish",
   scoring: "Считаем риск",
-  explaining: "Формируем вердикт",
+  explaining: "Формируем объяснение",
   completed: "Готово",
   failed: "Ошибка",
 };

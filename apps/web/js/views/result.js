@@ -17,8 +17,14 @@ import {
   tableWrap,
 } from "../components.js";
 import {
+  directionClass,
+  directionLabel,
   evidenceLabel,
+  explanationSourceLabel,
+  fallbackReasonLabel,
   formatCi,
+  formatContribution,
+  formatContributionShare,
   formatCpl,
   formatDateTimeUtc,
   formatEvidenceBaseline,
@@ -29,6 +35,7 @@ import {
   formatWeight,
   riskClass,
   riskLabel,
+  sourceTitle,
 } from "../format.js";
 
 const PAGE_SIZE = 20;
@@ -212,6 +219,18 @@ function evidenceRow(item) {
   const fillPercent = value === null ? 0 : clamp((Math.abs(value) / scale) * 100, 0, 100);
   const baselinePercent =
     baseline === null ? 0 : clamp((Math.abs(baseline) / scale) * 100, 0, 100);
+  const contribution = numberOrNull(item?.contribution);
+  const contributionShare = numberOrNull(item?.contribution_share);
+  const contributionText =
+    contribution === null
+      ? null
+      : [
+          directionLabel(item?.direction),
+          formatContribution(contribution),
+          contributionShare === null ? null : formatContributionShare(contributionShare),
+        ]
+          .filter(Boolean)
+          .join(" · ");
   return el(
     "div",
     { class: "evidence-row" },
@@ -241,8 +260,170 @@ function evidenceRow(item) {
       { class: "evidence-values" },
       el("span", { class: "evidence-value" }, formatEvidenceValue(code, value)),
       el("span", { class: "evidence-base" }, `база ${formatEvidenceBaseline(code, baseline)}`),
+      contributionText === null
+        ? null
+        : el(
+            "span",
+            { class: `evidence-contribution ${directionClass(item?.direction)}` },
+            contributionText,
+          ),
     ),
   );
+}
+
+// ---------- Explanation card ----------
+//
+// The explanation is prose about the already-computed verdict. It is rendered
+// as text only and the numeric score/meter are never derived from it.
+
+function trimmedString(value) {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function evidenceByCode(evidence) {
+  const index = new Map();
+  for (const item of evidence) {
+    const code = trimmedString(item?.code);
+    if (code !== "" && !index.has(code)) index.set(code, item);
+  }
+  return index;
+}
+
+function reasoningItem(item, evidenceIndex) {
+  const code = trimmedString(item?.evidence_code);
+  const direction = typeof item?.direction === "string" ? item.direction : "neutral";
+  const contribution = numberOrNull(item?.contribution);
+  const share =
+    contribution === null ? null : numberOrNull(evidenceIndex.get(code)?.contribution_share);
+  const meta = [el("span", { class: directionClass(direction) }, directionLabel(direction))];
+  if (contribution !== null) {
+    meta.push(el("span", { class: "mono" }, formatContribution(contribution)));
+    if (share !== null) {
+      meta.push(el("span", { class: "muted" }, `доля ${formatContributionShare(share)}`));
+    }
+  }
+  return el(
+    "li",
+    { class: "reasoning-item", "data-direction": direction },
+    el(
+      "div",
+      { class: "reasoning-head" },
+      el(
+        "span",
+        { class: "reasoning-code" },
+        code ? evidenceLabel(code) : "Признак",
+        code ? el("span", { class: "evidence-code mono" }, code) : null,
+      ),
+      el("span", { class: "reasoning-meta" }, meta),
+    ),
+    el(
+      "div",
+      { class: "reasoning-body" },
+      trimmedString(item?.observation) !== ""
+        ? el("p", { class: "reasoning-observation" }, item.observation)
+        : null,
+      trimmedString(item?.interpretation) !== ""
+        ? el("p", { class: "reasoning-interpretation" }, item.interpretation)
+        : null,
+    ),
+  );
+}
+
+function explanationSources(sources) {
+  const list = Array.isArray(sources)
+    ? sources.filter(
+        (source) =>
+          trimmedString(source?.id) !== "" || trimmedString(source?.title) !== "",
+      )
+    : [];
+  if (list.length === 0) return null;
+  return el(
+    "details",
+    { class: "raw-details" },
+    el("summary", {}, "Источники методики"),
+    el(
+      "ul",
+      { class: "source-list" },
+      list.map((source) =>
+        el(
+          "li",
+          {},
+          sourceTitle(source),
+          trimmedString(source?.id) !== ""
+            ? el("span", { class: "mono" }, source.id)
+            : null,
+        ),
+      ),
+    ),
+  );
+}
+
+function explanationMeta(explanation) {
+  const source = trimmedString(explanation?.source).toLowerCase();
+  const parts = [];
+  if (source === "llm") {
+    const provider = trimmedString(explanation?.provider);
+    const model = trimmedString(explanation?.model);
+    if (provider !== "") parts.push(provider);
+    if (model !== "") parts.push(model);
+  } else {
+    parts.push("объяснение сформировано без LLM");
+  }
+  const promptVersion = trimmedString(explanation?.prompt_version);
+  const knowledgeVersion = trimmedString(explanation?.knowledge_version);
+  if (promptVersion !== "") parts.push(`prompt ${promptVersion}`);
+  if (knowledgeVersion !== "") parts.push(`knowledge ${knowledgeVersion}`);
+  return parts.length ? el("p", { class: "llm-meta" }, parts.join(" · ")) : null;
+}
+
+function fallbackAlert(explanation) {
+  const source = trimmedString(explanation?.source).toLowerCase();
+  const reason = fallbackReasonLabel(explanation?.fallback_reason);
+  if (source !== "deterministic" && reason === "") return null;
+  const base = "LLM недоступен — объяснение сформировано детерминированно.";
+  return alert(reason === "" ? base : `${base} Причина: ${reason}.`, "warn", {
+    title: "Без LLM",
+  });
+}
+
+function explanationCard(explanation, evidence) {
+  if (explanation === null || typeof explanation !== "object") return null;
+  const summary = trimmedString(explanation.summary);
+  if (summary === "") return null;
+  const source = trimmedString(explanation.source).toLowerCase();
+  const isLlm = source === "llm";
+  const reasoning = Array.isArray(explanation.reasoning)
+    ? explanation.reasoning.filter((item) => item !== null && typeof item === "object")
+    : [];
+  const evidenceIndex = evidenceByCode(evidence);
+  const node = card(
+    {
+      className: "explanation-card",
+      title: "Почему такой вердикт",
+      actions: el(
+        "div",
+        { class: "explanation-head" },
+        el(
+          "span",
+          { class: `badge ${isLlm ? "badge-blue" : "badge-neutral"} source-badge` },
+          explanationSourceLabel(source),
+        ),
+      ),
+    },
+    el("p", { class: "explanation-subtitle" }, "Объяснение модели, не обвинение"),
+    fallbackAlert(explanation),
+    el("div", { class: "prose" }, el("p", {}, explanation.summary)),
+    reasoning.length
+      ? el(
+          "ol",
+          { class: "reasoning-list" },
+          reasoning.map((item) => reasoningItem(item, evidenceIndex)),
+        )
+      : null,
+    explanationSources(explanation.sources),
+    explanationMeta(explanation),
+  );
+  return node;
 }
 
 function russianSummary(verdict) {
@@ -318,6 +499,8 @@ function verdictCard(verdict) {
         )
       : null,
   );
+
+  const explanation = explanationCard(verdict?.explanation, evidence);
 
   return [
     card(
@@ -396,9 +579,10 @@ function verdictCard(verdict) {
         ),
       ),
     ),
+    explanation,
     evidenceCard,
     limitationsCard,
-  ];
+  ].filter(Boolean);
 }
 
 function resultCell(value, userColor) {
