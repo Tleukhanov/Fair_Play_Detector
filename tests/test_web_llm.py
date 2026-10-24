@@ -139,3 +139,22 @@ def test_explanation_card_is_not_rendered_for_old_verdicts() -> None:
     # keep their existing summary/limitations rendering.
     assert "if (explanation === null || typeof explanation !== \"object\") return null;" in source
     assert "].filter(Boolean)" in source
+
+
+def test_llm_and_fallback_shapes_are_rendered_honestly() -> None:
+    source = read(JS_DIR / "views" / "result.js")
+
+    # LLM: blue badge and provider/model metadata, never a fallback alert.
+    assert 'const isLlm = source === "llm";' in source
+    assert 'badge ${isLlm ? "badge-blue" : "badge-neutral"} source-badge' in source
+    assert "explanation?.provider" in source
+    assert "explanation?.model" in source
+
+    # Fallback: a reason is shown, but an empty/unknown reason stays silent.
+    assert 'if (source !== "deterministic" && reason === "") return null;' in source
+    assert "Причина:" in source
+
+    # Deterministic fallback has no sources; hide the section instead of drawing
+    # an empty list.
+    assert "if (list.length === 0) return null;" in source
+    assert "Источники методики" in source

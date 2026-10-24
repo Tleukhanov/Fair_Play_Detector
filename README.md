@@ -22,14 +22,15 @@
 | **Stockfish-адаптер** | ✅ подключён, CPL в POV ходящего, клип мата, часы, depth-1/9/15 | `packages/chess_analysis/` |
 | **Анализ + скоринг** | ✅ `ChessAnalysisStage` + `ScoringStage` подключены | `apps/api/app/workers/analysis_stages.py` |
 | **ML-модель** | ✅ обучена на ChessFraud, артефакт + `TrainedScorer` | `packages/ml/train.py`, `scorer.py` |
-| **LLM-слой** | ⚠️ только детерминированный fallback | `packages/llm/` |
+| **LLM-слой** | ✅ RAG-объяснение + обязательный fallback; live-провайдер ждёт ключ | `packages/llm/` |
 | **Фронтенд** | ✅ статический no-build UI на `/app/` | `apps/web/` |
 | **Maia** | ❌ не подключена (не входит в inference) | — |
 
-Проверки в локальном окружении: **164 passed** (163 + smoke с локальным
-артефактом), `ruff` и `mypy` чистые. В CI — **163 passed, 1 skipped**
-(smoke-тест скипается без gitignored-артефакта). CI-workflow: Python 3.12 +
-Stockfish + ruff/mypy/pytest.
+Проверки в локальном окружении: **229 passed** (228 + smoke с локальным
+артефактом модели и ChessFraud parquet), `ruff` и `mypy` чистые. На чистом
+checkout без gitignored-артефактов — **228 passed, 1 skipped**; в CI столько же
+(smoke-тест скипается без артефакта). CI-workflow: Python 3.12 + Stockfish +
+ruff/mypy/pytest.
 
 ---
 
@@ -165,7 +166,83 @@ CI `[−0.0598, +0.0556]`. То есть модель пока не лучше �
 
 ---
 
-## 5. Как устроен скан
+## 5. LLM-объяснение
+
+LLM **не выставляет вердикт**. Числовой слой (`TrainedScorer` или
+`BaselineScorer`) считает риск-скор, интервал и вклады признаков; LLM только
+объясняет по-русски, почему модель пришла к такому решению. Score, порог и
+интервал из ответа LLM не меняются: на вход идёт уже посчитанный вердикт, на
+выходе — только текст.
+
+**Что ограничивает ответ (RAG + валидатор).** В промпт попадают вердикт и
+посчитанные `evidence`/`contribution`/`direction`, плюс курируемая база знаний
+`packages/llm/knowledge.json` (политики, пороги, ограничения). Валидатор
+`packages/llm/validator.py` отклоняет ответ, если в нём:
+
+- есть обвинение или запрещённая лексика (`читер`, `винов`, `доказано`, `бан`
+  и т. п.);
+- нет фразы «не является доказательством»;
+- придуманы числа, которых нет во входных данных или источниках
+  (например, «97% точность»);
+- `reasoning` ссылается на неизвестный `evidence_code` или вклад не совпадает
+  с вердиктом;
+- нет обязательных источников `policy.no_accusation` / `policy.factual_only`.
+
+После одной попытки исправления включается детерминированное объяснение; скан
+при этом не падает.
+
+**Приватность.** В провайдер уходит только `ExplanationInput`: уровень риска,
+score, интервал, число партий, признаки и вклады, ограничения. Ник, PGN, ID
+партий, имена соперников и рейтинги не передаются — в контракте
+`packages/llm/contracts.py` для них нет полей.
+
+**Без ключа.** Если `LLM_API_KEY` пуст, `LLM_ENABLED=false` или провайдер
+недоступен, работает `DeterministicExplainer`: он строит объяснение из тех же
+признаков, вкладов, интервала и размера выборки. В UI карточка «Почему такой
+вердикт» показывает бейдж «без LLM» и, если backend вернул `fallback_reason`,
+человекочитаемую причину (например, «Таймаут провайдера»); иначе — общую строку
+«LLM недоступен — объяснение сформировано детерминированно». Ключи и сырые
+ошибки провайдера в интерфейс не попадают.
+
+**Переменные окружения** (ключ хранится в `.env`, который gitignored, и никогда
+не коммитится):
+
+| Переменная | По умолчанию | Назначение |
+|---|---|---|
+| `LLM_ENABLED` | `true` | Выключить слой, оставив fallback |
+| `LLM_PROVIDER` | `openai` | `openai`, `openai_compatible` или `gemini` |
+| `LLM_API_KEY` | пусто | Ключ провайдера; пусто → deterministic fallback |
+| `LLM_MODEL` | `gpt-4o-mini` | Имя модели **выбранного** провайдера |
+| `LLM_BASE_URL` | `https://api.openai.com/v1` | Endpoint; для Gemini — `.../v1beta` |
+| `LLM_TIMEOUT_SECONDS` | `30` | Таймаут одного запроса |
+| `LLM_MAX_RETRIES` | `1` | Повторы на 429/5xx |
+| `LLM_TEMPERATURE` | `0.2` | Температура генерации |
+| `LLM_MAX_OUTPUT_TOKENS` | `900` | Лимит ответа |
+| `LLM_KNOWLEDGE_PATH` | пусто | Альтернативный `knowledge.json` |
+
+Примеры провайдеров (модель должна соответствовать провайдеру: имя модели
+OpenAI не сработает на Gemini endpoint):
+
+```bash
+# OpenAI-совместимый endpoint (по умолчанию)
+LLM_PROVIDER=openai
+LLM_MODEL=gpt-4o-mini
+LLM_BASE_URL=https://api.openai.com/v1
+
+# OpenRouter
+LLM_PROVIDER=openai_compatible
+LLM_MODEL=openai/gpt-4o-mini
+LLM_BASE_URL=https://openrouter.ai/api/v1
+
+# Google Gemini
+LLM_PROVIDER=gemini
+LLM_MODEL=gemini-1.5-flash
+LLM_BASE_URL=https://generativelanguage.googleapis.com/v1beta
+```
+
+---
+
+## 6. Как устроен скан
 
 ```
 POST /api/v1/scans
@@ -173,7 +250,7 @@ POST /api/v1/scans
   -> fetching   Lichess PGN (clocks=true) -> games (per-scan snapshot)
   -> analyzing  Stockfish: mover-POV CPL, top1 depth 1/9/15, часы, forced/noisy
   -> scoring    TrainedScorer (или BaselineScorer, если артефакта нет)
-  -> explaining deterministic fallback
+  -> explaining LLM-объяснение или deterministic fallback
   -> completed  verdict + per-game scores + moves
 ```
 
@@ -195,7 +272,7 @@ depth 15 / 100 ms → `TrainedScorer` → `completed`, `low_risk 0.3589`
 
 ---
 
-## 6. Что НЕ работает / ограничения
+## 7. Что НЕ работает / ограничения
 
 - **Per-move модель не в serving.** В проде game-level; per-move — research.
 - **Maia/Allie не подключены** к inference: `maia_divergence` всегда `None`,
@@ -207,7 +284,9 @@ depth 15 / 100 ms → `TrainedScorer` → `completed`, `low_risk 0.3589`
   трафик.
 - **Одна ошибка движка валит весь scan** (`ANALYSIS_FAILED`); per-game isolation
   не сделана.
-- **LLM-провайдер не подключён** — только deterministic fallback.
+- **Live-провайдер LLM не проверен**: ключа пока нет; путь с OpenAI-совместимым
+  и Gemini API покрыт тестами и локальным fake-провайдером, но не оплаченным
+  внешним API. Без ключа всегда работает deterministic fallback.
 - **Фронтенд — demo-UI без аккаунтов**: последние сканы хранятся только в
   `localStorage`, серверной истории и авторизации нет.
 - **Нет auth/rate-limit/retention** на публичном API; перед публикацией нужен
@@ -218,7 +297,7 @@ depth 15 / 100 ms → `TrainedScorer` → `completed`, `low_risk 0.3589`
 
 ---
 
-## 7. Структура репозитория
+## 8. Структура репозитория
 
 ```
 apps/api/app/          FastAPI: роуты, модели БД, воркеры
@@ -229,7 +308,7 @@ packages/
   feature_engineering/ контракт GameAggregateFeatures
   ml/                  feature contract, data loader, features, train, scorer
   dataset/             старый bounded collector (Lichess Elite/TCEC; не используется)
-  llm/                 контракты объяснений + deterministic fallback
+  llm/                 RAG-объяснение, валидатор, провайдеры, deterministic fallback
 scripts/               download_chessfraud.py
 reports/               chessfraud_metrics.json
 migrations/            Alembic 0001…0005
@@ -245,7 +324,7 @@ data_raw/              сырые parquet (gitignored)
 
 ---
 
-## 8. Как запустить
+## 9. Как запустить
 
 ```bash
 python -m pip install -e ".[dev,dataset,ml]"
@@ -276,8 +355,10 @@ uvicorn apps.api.app.main:app
 ```
 
 В UI есть форма (ник, 10–50 партий, блиц/рапид, только рейтинговые), живой
-прогресс по этапам, вердикт со score/CI/признаками, таблица партий с
-пагинацией, разбор ходов по партии, светлая/тёмная тема и недавние сканы.
+прогресс по этапам, вердикт со score/CI/признаками, карточка «Почему такой
+вердикт» с бейджем «LLM»/«без LLM», пунктами reasoning и источниками методики,
+таблица партий с пагинацией, разбор ходов по партии, светлая/тёмная тема и
+недавние сканы.
 Ошибки валидации, переполненной очереди, сети, упавшего скана и `404`
 показываются текстом с кнопкой повторной попытки.
 
@@ -316,9 +397,9 @@ python -m packages.ml.train \
 ### Тесты и линтеры
 
 ```bash
-python -m pytest -q                          # 164 passed (163 + smoke с артефактом)
+python -m pytest -q                          # 229 passed (228 + smoke с артефактом)
 python -m ruff check apps packages tests scripts
-python -m mypy                               # Success: no issues found in 58 source files
+python -m mypy                               # Success: no issues found in 65 source files
 ```
 
 Stockfish-тесты пропускаются, если бинарь не найден.
@@ -328,7 +409,7 @@ Stockfish-тесты пропускаются, если бинарь не най
 
 ---
 
-## 9. Бэклог по приоритету
+## 10. Бэклог по приоритету
 
 1. **Per-move serving**: протащить вероятность по каждому ходу в
    `GameAggregateFeatures` и `ScoringStage`; оценить, даёт ли это прирост.
@@ -337,7 +418,9 @@ Stockfish-тесты пропускаются, если бинарь не най
 3. **Больше реальных данных**: ChessFraud-Synth как pretrain → fine-tune на
    `chess_fraud`, внешняя валидация на новых когортах.
 4. **Per-game isolation**: одна плохая партия не должна валить scan.
-5. **LLM-провайдер** (Gemini Flash) вместо fallback, со strict schema.
+5. **Live-проверка LLM-провайдера** на реальном ключе (Gemini или
+   OpenAI-совместимый endpoint) и выбор модели; схема, валидатор и fallback уже
+   готовы.
 6. **Графики во фронтенде**: CPL/time/top-1 по партиям и экспорт результата;
    базовый UI, polling и разбор ходов уже есть.
 7. **Security/privacy**: auth, rate-limit, retention, запрет индексации.
@@ -345,7 +428,7 @@ Stockfish-тесты пропускаются, если бинарь не най
 
 ---
 
-## 10. Лицензии и атрибуция
+## 11. Лицензии и атрибуция
 
 ChessFraud распространяется по CC BY 4.0. Если используешь данные/модель,
 цитируй:
