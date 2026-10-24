@@ -1071,3 +1071,99 @@ td { overflow-wrap: anywhere; }
 .moves-scroll { max-height: 68vh; overflow-y: auto; }
 .moves-scroll thead th { position: sticky; top: 0; z-index: 1; }
 
+
+/* ---------- LLM explanation (web-llm wave) ----------
+   Explanations are prose about an already computed verdict, so these styles
+   stay compact and never compete with the score. Direction colours mirror the
+   risk scale: increases-risk is red, reduces-risk is green, neutral is muted. */
+
+.explanation-card { border-color: var(--c-border-strong); }
+.explanation-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.explanation-subtitle {
+  margin: -2px 0 12px;
+  font-size: 12px;
+  color: var(--c-text-muted);
+}
+
+.source-badge { text-transform: none; letter-spacing: 0.2px; }
+
+.reasoning-list {
+  list-style: none;
+  margin: 14px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.reasoning-item {
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--c-border);
+  border-left: 3px solid var(--c-border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--c-bg-box-alt);
+}
+.reasoning-item[data-direction="supports_risk"] { border-left-color: var(--c-risk-high); }
+.reasoning-item[data-direction="reduces_risk"] { border-left-color: var(--c-risk-low); }
+.reasoning-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 4px 12px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.reasoning-code {
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+.reasoning-code .evidence-code { margin-left: 6px; font-weight: 400; }
+.reasoning-meta {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  flex-wrap: wrap;
+  font-size: 11px;
+  white-space: nowrap;
+}
+.reasoning-body { margin-top: 5px; display: flex; flex-direction: column; gap: 3px; }
+.reasoning-body p { margin: 0; font-size: 13px; line-height: 1.45; overflow-wrap: anywhere; }
+.reasoning-interpretation { color: var(--c-text-muted); }
+
+.direction-up { color: var(--c-risk-high); font-weight: 700; }
+.direction-down { color: var(--c-risk-low); font-weight: 700; }
+.direction-neutral { color: var(--c-text-muted); font-weight: 600; }
+
+.source-list {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.source-list li { margin-bottom: 3px; }
+.source-list li:last-child { margin-bottom: 0; }
+.source-list .mono { margin-left: 6px; font-size: 10px; color: var(--c-text-muted); }
+
+.llm-meta {
+  margin-top: 12px;
+  font-size: 11px;
+  color: var(--c-text-muted);
+  overflow-wrap: anywhere;
+}
+
+.evidence-contribution {
+  display: block;
+  margin-top: 2px;
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 620px) {
+  .reasoning-head { flex-direction: column; align-items: flex-start; gap: 3px; }
+  .reasoning-meta { white-space: normal; }
+  .reasoning-item { padding: 9px 10px; }
+  .explanation-subtitle { margin-bottom: 10px; }
+}

@@ -205,3 +205,79 @@ export function formatWeight(value) {
   const number = toNumber(value);
   return number === null ? DASH : number.toFixed(2);
 }
+
+// ---------- LLM explanation helpers ----------
+//
+// The backend already decided whether an explanation came from a provider or
+// from the deterministic fallback. These helpers only label that decision; they
+// never infer anything about the player or change a number.
+
+const EXPLANATION_SOURCE_LABELS = {
+  llm: "LLM",
+  deterministic: "без LLM",
+};
+
+export function explanationSourceLabel(source) {
+  if (typeof source !== "string") return DASH;
+  return EXPLANATION_SOURCE_LABELS[source.trim().toLowerCase()] || DASH;
+}
+
+const DIRECTION_LABELS = {
+  supports_risk: "повышает риск",
+  reduces_risk: "снижает риск",
+  neutral: "нейтрально",
+};
+
+export function directionLabel(direction) {
+  if (typeof direction !== "string") return DIRECTION_LABELS.neutral;
+  return DIRECTION_LABELS[direction.trim().toLowerCase()] || DIRECTION_LABELS.neutral;
+}
+
+const DIRECTION_CLASSES = {
+  supports_risk: "direction-up",
+  reduces_risk: "direction-down",
+  neutral: "direction-neutral",
+};
+
+export function directionClass(direction) {
+  if (typeof direction !== "string") return DIRECTION_CLASSES.neutral;
+  return DIRECTION_CLASSES[direction.trim().toLowerCase()] || DIRECTION_CLASSES.neutral;
+}
+
+/** Signed model-space contribution, e.g. `+0.081` or `−0.042` (U+2212 minus). */
+export function formatContribution(value) {
+  const number = toNumber(value);
+  if (number === null) return DASH;
+  if (number === 0) return "0.000";
+  const magnitude = Math.abs(number).toFixed(3);
+  return number > 0 ? `+${magnitude}` : `\u2212${magnitude}`;
+}
+
+/** Share of total absolute attribution, e.g. `18%`. */
+export function formatContributionShare(value) {
+  const number = toNumber(value);
+  return number === null ? DASH : `${Math.round(number * 100)}%`;
+}
+
+/** Retrieved source title, falling back to its id when the title is missing. */
+export function sourceTitle(source) {
+  const title = typeof source?.title === "string" ? source.title.trim() : "";
+  if (title !== "") return title;
+  const id = typeof source?.id === "string" ? source.id.trim() : "";
+  return id !== "" ? id : DASH;
+}
+
+const FALLBACK_REASON_LABELS = {
+  no_api_key: "LLM не настроен",
+  provider_error: "Ошибка провайдера",
+  timeout: "Таймаут провайдера",
+  invalid_json: "Некорректный ответ LLM",
+  validation_failed: "Ответ не прошёл проверку",
+  unexpected_error: "Внутренняя ошибка",
+};
+
+/** Human label for a backend fallback code; unknown codes stay silent. */
+export function fallbackReasonLabel(reason) {
+  if (typeof reason !== "string") return "";
+  return FALLBACK_REASON_LABELS[reason.trim().toLowerCase()] || "";
+}
