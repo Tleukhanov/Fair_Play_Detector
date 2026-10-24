@@ -14,7 +14,7 @@
 
 | Слой | Состояние | Файлы |
 |---|---|---|
-| **Схема БД** | ✅ 6 таблиц, 5 миграций Alembic | `apps/api/app/db/models.py`, `migrations/` |
+| **Схема БД** | ✅ 6 таблиц, 6 миграций Alembic | `apps/api/app/db/models.py`, `migrations/` |
 | **API сканирования** | ✅ 5 эндпоинтов, валидация, 202/404/409/503 | `apps/api/app/api/routes.py` |
 | **Оркестрация** | ✅ state machine + lease + stale-scan reaper | `apps/api/app/workers/state_machine.py`, `store.py`, `service.py` |
 | **Фоновый исполнитель** | ✅ 2 параллельно, 20 в очереди | `apps/api/app/workers/executor.py` |
@@ -311,7 +311,7 @@ packages/
   llm/                 RAG-объяснение, валидатор, провайдеры, deterministic fallback
 scripts/               download_chessfraud.py
 reports/               chessfraud_metrics.json
-migrations/            Alembic 0001…0005
+migrations/            Alembic 0001…0006
 tests/                 pytest
 data/models/           артефакты (gitignored)
 data_raw/              сырые parquet (gitignored)
