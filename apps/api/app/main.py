@@ -11,13 +11,13 @@ from fastapi.staticfiles import StaticFiles
 
 from packages.chess_analysis import StockfishEngine
 from packages.ingest import LichessClient
-from packages.llm import DeterministicExplainer
 
 from .api.routes import router as scans_router
 from .config import get_settings
 from .db.session import session_factory
 from .workers.default_stages import local_scan_stages
 from .workers.executor import BackgroundScanExecutor, ScanJob
+from .workers.llm_factory import create_explainer
 from .workers.scoring_factory import create_scorer
 from .workers.service import ScanWorker
 from .workers.store import ScanWorkerStore, reap_stale_scans
@@ -44,7 +44,7 @@ def _create_scan_job() -> ScanJob:
             LichessClient(str(settings.lichess_api_base_url)),
             engine=engine,
             scorer=create_scorer(settings),
-            explainer=DeterministicExplainer(),
+            explainer=create_explainer(settings),
         ),
     )
     return worker.run

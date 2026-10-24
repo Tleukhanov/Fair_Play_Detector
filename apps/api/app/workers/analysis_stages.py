@@ -1,5 +1,6 @@
-"""Persistence-aware analysis, scoring, and verdict stages."""
+"""Persistence-aware analysis, scoring, explanation, and verdict stages."""
 
+import logging
 from dataclasses import asdict
 from hashlib import sha256
 from uuid import UUID, uuid4
@@ -10,8 +11,16 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from packages.chess_analysis import aggregate_game_features
 from packages.chess_analysis.protocol import ChessEngine, EngineAnalysisError
 from packages.feature_engineering.schema import GameAggregateFeatures
-from packages.llm import DeterministicExplainer, ExplanationEvidence, ExplanationInput
-from packages.ml import ScoringInput
+from packages.llm import (
+    PROMPT_VERSION,
+    DeterministicExplainer,
+    Explainer,
+    ExplanationDirection,
+    ExplanationEvidence,
+    ExplanationInput,
+    ExplanationThresholds,
+)
+from packages.ml import FeatureEvidence, ScoreResult, ScoringInput
 from packages.ml.protocols import Scorer
 
 from ..db.models import (
@@ -24,8 +33,10 @@ from ..db.models import (
 )
 from .pipeline import ScanPipelineError
 
-#: Version stored with every generated explanation.
-PROMPT_VERSION = "deterministic-v1"
+logger = logging.getLogger(__name__)
+
+#: Limitations the numeric layer states before the explanation stage refines them.
+_DEFAULT_LIMITATIONS = ["Automated analysis is not proof of cheating."]
 
 
 class ChessAnalysisStage:
@@ -171,7 +182,12 @@ def _analysis_cache_key(
 
 
 class ScoringStage:
-    """Score persisted aggregate features and store the numeric verdict."""
+    """Score persisted aggregate features and store the numeric verdict.
+
+    The stage owns only the numeric verdict.  It still writes a deterministic
+    initial explanation so ``summary`` and ``limitations`` are valid before the
+    fourth stage runs, but it never calls a language model.
+    """
 
     def __init__(
         self,
@@ -182,7 +198,9 @@ class ScoringStage:
     ) -> None:
         self._session_factory = session_factory
         self._scorer = scorer
-        self._explainer = explainer or DeterministicExplainer()
+        # Retained for constructor compatibility; explanations are produced by
+        # ExplanationStage after scoring, never here.
+        self._legacy_explainer = explainer
 
     async def run(self, scan_id: UUID) -> None:
         async with self._session_factory() as session:
@@ -232,27 +250,8 @@ class ScoringStage:
                         explainability={"risk_level": result.risk_level},
                     )
                 )
-            explanation = self._explainer.explain(
-                ExplanationInput(
-                    risk_level=result.risk_level,
-                    risk_score=result.risk_score,
-                    confidence_interval=result.confidence_interval,
-                    games_analyzed=result.games_analyzed,
-                    evidence=[
-                        ExplanationEvidence(
-                            code=item.code,
-                            label=item.label,
-                            value=item.value,
-                            baseline=item.baseline,
-                            weight=item.weight,
-                        )
-                        for item in result.evidence
-                    ],
-                    limitations=["Automated analysis is not proof of cheating."],
-                    model_version=result.model.model_version,
-                    prompt_version=PROMPT_VERSION,
-                )
-            )
+            data = _explanation_input(result)
+            explanation = DeterministicExplainer().explain(data)
             session.add(
                 VerdictModel(
                     id=str(uuid4()),
@@ -264,10 +263,128 @@ class ScoringStage:
                     summary=explanation.summary,
                     evidence=[item.model_dump() for item in result.evidence],
                     limitations=explanation.limitations,
+                    thresholds=result.model.thresholds.model_dump(),
+                    explanation=explanation.model_dump(),
                     model_version=result.model.model_version,
-                    prompt_version=PROMPT_VERSION,
+                    prompt_version=explanation.prompt_version,
                 )
             )
             scan.model_version = result.model.model_version
             scan.games_analyzed = len(rows)
             await session.commit()
+
+
+class ExplanationStage:
+    """Replace the initial verdict explanation with the grounded LLM result."""
+
+    def __init__(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        explainer: Explainer,
+    ) -> None:
+        self._session_factory = session_factory
+        self._explainer = explainer
+
+    async def run(self, scan_id: UUID) -> None:
+        async with self._session_factory() as session:
+            verdict = await session.scalar(
+                select(VerdictModel).where(VerdictModel.scan_id == str(scan_id))
+            )
+            if verdict is None:
+                raise ScanPipelineError("VERDICT_NOT_FOUND", "verdict not found")
+            scan = await session.get(ScanModel, str(scan_id))
+            if scan is None:
+                raise ScanPipelineError("SCAN_NOT_FOUND", "scan not found")
+            try:
+                data = _explanation_input_from_verdict(verdict, scan.games_analyzed)
+            except (TypeError, ValueError) as exc:
+                raise ScanPipelineError("EXPLANATION_INPUT_INVALID", str(exc)) from exc
+
+            try:
+                output = await self._explainer.aexplain(data)
+            except Exception as exc:  # noqa: BLE001 - an explanation must not fail a scan
+                logger.warning(
+                    "explainer failed for scan %s, using deterministic fallback: %s",
+                    scan_id,
+                    exc,
+                )
+                output = DeterministicExplainer().explain(data).model_copy(
+                    update={"fallback_reason": "unexpected_error"}
+                )
+
+            verdict.summary = output.summary
+            verdict.limitations = list(output.limitations)
+            verdict.explanation = output.model_dump()
+            verdict.prompt_version = output.prompt_version
+            await session.commit()
+
+
+def _explanation_input(result: ScoreResult) -> ExplanationInput:
+    """Build the strict LLM input from a numeric score result."""
+
+    thresholds = result.model.thresholds
+    return ExplanationInput(
+        risk_level=result.risk_level,
+        risk_score=result.risk_score,
+        confidence_interval=result.confidence_interval,
+        games_analyzed=result.games_analyzed,
+        evidence=_explanation_evidence(result.evidence),
+        limitations=list(_DEFAULT_LIMITATIONS),
+        model_version=result.model.model_version,
+        prompt_version=PROMPT_VERSION,
+        thresholds=ExplanationThresholds(
+            suspicious=thresholds.suspicious,
+            high_risk=thresholds.high_risk,
+        ),
+    )
+
+
+def _explanation_evidence(evidence: list[FeatureEvidence]) -> list[ExplanationEvidence]:
+    """Copy scorer evidence, carrying the per-verdict contributions through."""
+
+    items: list[ExplanationEvidence] = []
+    for item in evidence:
+        items.append(
+            ExplanationEvidence(
+                code=item.code,
+                label=item.label,
+                value=item.value,
+                baseline=item.baseline,
+                weight=item.weight,
+                contribution=item.contribution,
+                contribution_share=item.contribution_share,
+                direction=(
+                    ExplanationDirection(item.direction.value)
+                    if item.direction is not None
+                    else None
+                ),
+            )
+        )
+    return items
+
+
+def _explanation_input_from_verdict(
+    verdict: VerdictModel,
+    games_analyzed: int,
+) -> ExplanationInput:
+    """Rebuild the strict LLM input from persisted verdict fields."""
+
+    thresholds = (
+        ExplanationThresholds.model_validate(verdict.thresholds)
+        if verdict.thresholds is not None
+        else None
+    )
+    limitations = list(verdict.limitations) or list(_DEFAULT_LIMITATIONS)
+    return ExplanationInput(
+        risk_level=verdict.risk_level,
+        risk_score=verdict.risk_score,
+        confidence_interval=(verdict.confidence_lower, verdict.confidence_upper),
+        games_analyzed=games_analyzed,
+        evidence=[
+            ExplanationEvidence.model_validate(item) for item in verdict.evidence
+        ],
+        limitations=limitations,
+        model_version=verdict.model_version,
+        prompt_version=verdict.prompt_version or PROMPT_VERSION,
+        thresholds=thresholds,
+    )

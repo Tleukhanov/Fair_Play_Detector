@@ -134,6 +134,8 @@ class VerdictModel(Base):
     summary: Mapped[str] = mapped_column(Text, nullable=False)
     evidence: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False)
     limitations: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    thresholds: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    explanation: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     model_version: Mapped[str] = mapped_column(String(100), nullable=False)
     prompt_version: Mapped[str | None] = mapped_column(String(100))
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
