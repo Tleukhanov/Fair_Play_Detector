@@ -49,6 +49,27 @@ class Settings(BaseSettings):
     max_concurrent_scans: int = Field(default=2, ge=1, validation_alias="MAX_CONCURRENT_SCANS")
     max_pending_scans: int = Field(default=20, ge=0, validation_alias="MAX_PENDING_SCANS")
 
+    # Grounded LLM explanations. The feature is enabled by default, but without
+    # an API key the deterministic explainer is used and no request is made.
+    llm_enabled: bool = Field(default=True, validation_alias="LLM_ENABLED")
+    llm_provider: str = Field(default="openai", validation_alias="LLM_PROVIDER")
+    llm_api_key: str = Field(default="", validation_alias="LLM_API_KEY")
+    llm_model: str = Field(default="gpt-4o-mini", validation_alias="LLM_MODEL")
+    llm_base_url: str = Field(
+        default="https://api.openai.com/v1", validation_alias="LLM_BASE_URL"
+    )
+    llm_timeout_seconds: float = Field(
+        default=30.0, gt=0.0, validation_alias="LLM_TIMEOUT_SECONDS"
+    )
+    llm_max_retries: int = Field(default=1, ge=0, validation_alias="LLM_MAX_RETRIES")
+    llm_temperature: float = Field(
+        default=0.2, ge=0.0, le=2.0, validation_alias="LLM_TEMPERATURE"
+    )
+    llm_max_output_tokens: int = Field(
+        default=900, ge=1, validation_alias="LLM_MAX_OUTPUT_TOKENS"
+    )
+    llm_knowledge_path: str = Field(default="", validation_alias="LLM_KNOWLEDGE_PATH")
+
 
 @lru_cache
 def get_settings() -> Settings:

@@ -8,7 +8,11 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from apps.api.app.db.base import Base
 from apps.api.app.db.models import ScanModel, UserModel
-from apps.api.app.workers.analysis_stages import ChessAnalysisStage, ScoringStage
+from apps.api.app.workers.analysis_stages import (
+    ChessAnalysisStage,
+    ExplanationStage,
+    ScoringStage,
+)
 from apps.api.app.workers.default_stages import (
     LichessFetchStage,
     LocalNoOpStage,
@@ -168,7 +172,7 @@ def test_local_scan_stages_wires_the_four_stages() -> None:
             LichessFetchStage,
             ChessAnalysisStage,
             ScoringStage,
-            LocalNoOpStage,
+            ExplanationStage,
         ]
         placeholders = local_scan_stages(session_factory, engine=None, scorer=None)
         assert [type(stage) for stage in placeholders] == [

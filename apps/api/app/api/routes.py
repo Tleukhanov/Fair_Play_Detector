@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from packages.chess_analysis.models import EVAL_CLIP_CP
 from packages.ingest.username import normalize_username
+from packages.llm.contracts import ExplanationOutput
 
 from ..db.models import (
     GameFeaturesModel,
@@ -132,6 +133,11 @@ async def get_scan_verdict(
         raise HTTPException(status_code=404, detail="verdict not found")
     evidence = [EvidenceItem.model_validate(item) for item in verdict.evidence]
     confidence_interval = (verdict.confidence_lower, verdict.confidence_upper)
+    explanation = (
+        ExplanationOutput.model_validate(verdict.explanation)
+        if verdict.explanation is not None
+        else None
+    )
     return VerdictResponse(
         scan_id=scan_id,
         username=user.lichess_username,
@@ -143,6 +149,7 @@ async def get_scan_verdict(
         evidence=evidence,
         limitations=verdict.limitations,
         model_version=verdict.model_version,
+        explanation=explanation,
     )
 
 

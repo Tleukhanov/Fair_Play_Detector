@@ -7,11 +7,11 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from packages.chess_analysis.protocol import ChessEngine
 from packages.ingest import LichessClient, LichessClientError, LichessIngestService
-from packages.llm import DeterministicExplainer
+from packages.llm import DeterministicExplainer, Explainer
 from packages.ml.protocols import Scorer
 
 from ..db.models import ScanModel, UserModel
-from .analysis_stages import ChessAnalysisStage, ScoringStage
+from .analysis_stages import ChessAnalysisStage, ExplanationStage, ScoringStage
 from .pipeline import ScanPipelineError, ScanStage
 
 
@@ -58,7 +58,7 @@ def local_scan_stages(
     *,
     engine: ChessEngine | None = None,
     scorer: Scorer | None = None,
-    explainer: DeterministicExplainer | None = None,
+    explainer: Explainer | None = None,
 ) -> tuple[ScanStage, ...]:
     """Return the four scan stages: fetch, analyze, score, and explain.
 
@@ -76,7 +76,8 @@ def local_scan_stages(
     if engine is None or scorer is None:
         return (fetch, LocalNoOpStage(), LocalNoOpStage(), LocalNoOpStage())
     analyze: ScanStage = ChessAnalysisStage(session_factory, engine)
-    score: ScanStage = ScoringStage(session_factory, scorer, explainer=explainer)
-    # ScoringStage already persisted the verdict; the final stage only carries
-    # the scan through EXPLAINING to COMPLETED.
-    return (fetch, analyze, score, LocalNoOpStage())
+    score: ScanStage = ScoringStage(session_factory, scorer)
+    explain: ScanStage = ExplanationStage(
+        session_factory, explainer or DeterministicExplainer()
+    )
+    return (fetch, analyze, score, explain)

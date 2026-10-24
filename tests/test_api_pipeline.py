@@ -19,7 +19,7 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
-from apps.api.app.api.routes import get_scan_game, list_scan_games
+from apps.api.app.api.routes import get_scan_game, get_scan_verdict, list_scan_games
 from apps.api.app.config import Settings
 from apps.api.app.db.base import Base
 from apps.api.app.db.models import (
@@ -31,12 +31,25 @@ from apps.api.app.db.models import (
     VerdictModel,
 )
 from apps.api.app.domain.models import DomainScanStatus
-from apps.api.app.workers.analysis_stages import ChessAnalysisStage, ScoringStage
+from apps.api.app.schemas.api import EvidenceItem
+from apps.api.app.workers.analysis_stages import (
+    ChessAnalysisStage,
+    ExplanationStage,
+    ScoringStage,
+)
 from apps.api.app.workers.scoring_factory import BASELINE_MODEL_VERSION, create_scorer
 from apps.api.app.workers.store import ScanWorkerStore, reap_stale_scans
 from packages.chess_analysis.models import AnalysisConfig, MoveAnalysis
 from packages.ingest import LichessIngestService
-from packages.llm import DeterministicExplainer
+from packages.llm import (
+    DeterministicExplainer,
+    ExplanationDirection,
+    ExplanationInput,
+    ExplanationOutput,
+    ExplanationReasoning,
+    ExplanationSource,
+    load_knowledge,
+)
 from packages.ml import (
     FEATURE_NAMES,
     FEATURE_SCHEMA_VERSION,
@@ -120,6 +133,46 @@ def _metadata() -> ModelMetadata:
         analysis_time_ms=100,
         thresholds=RiskThresholds(suspicious=0.55, high_risk=0.75),
     )
+
+
+class FakeLLMExplainer:
+    """Deterministic stand-in for the grounded LLM explainer."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def aexplain(self, data: ExplanationInput) -> ExplanationOutput:
+        self.calls += 1
+        first = data.evidence[0]
+        mandatory = load_knowledge().mandatory
+        return ExplanationOutput(
+            summary=(
+                f"Итог: риск-скор {data.risk_score:.2f} по "
+                f"{data.games_analyzed} партиям. "
+                "Результат не является доказательством нарушения."
+            ),
+            limitations=["Автоматический анализ не является доказательством нарушения."],
+            source="llm",
+            reasoning=[
+                ExplanationReasoning(
+                    evidence_code=first.code,
+                    observation=(
+                        f"{first.label}: значение {first.value:.2f}, "
+                        f"базовая линия {first.baseline:.2f}."
+                    ),
+                    interpretation="Признак сдвигает решение модели в сторону риска.",
+                    direction=first.direction or ExplanationDirection.NEUTRAL,
+                    contribution=first.contribution,
+                )
+            ],
+            sources=[
+                ExplanationSource(id=chunk.id, title=chunk.title)
+                for chunk in mandatory[:2]
+            ],
+            provider="fake",
+            model="fake-model",
+            prompt_version="rag-v1",
+        )
 
 
 class MemoryDatabase:
@@ -231,6 +284,7 @@ def test_analysis_scoring_and_verdict_pipeline() -> None:
         await store.transition(
             scan_uuid, lease_id, DomainScanStatus.SCORING, DomainScanStatus.EXPLAINING
         )
+        await ExplanationStage(session_factory, DeterministicExplainer()).run(scan_uuid)
         await store.transition(
             scan_uuid, lease_id, DomainScanStatus.EXPLAINING, DomainScanStatus.COMPLETED
         )
@@ -269,6 +323,12 @@ def test_analysis_scoring_and_verdict_pipeline() -> None:
             assert verdict.confidence_lower <= verdict.risk_score <= verdict.confidence_upper
             assert verdict.evidence
             assert verdict.model_version == "baseline-fixture"
+            assert verdict.thresholds == {"suspicious": 0.55, "high_risk": 0.75}
+            assert verdict.explanation is not None
+            assert verdict.explanation["source"] == "deterministic"
+            assert "Итог:" in verdict.summary
+            assert verdict.explanation["reasoning"]
+            assert verdict.prompt_version == "deterministic-v1"
 
         # Re-running scoring must replace rows, not duplicate them.
         await scoring.run(scan_uuid)
@@ -283,6 +343,95 @@ def test_analysis_scoring_and_verdict_pipeline() -> None:
             await _count(session_factory, select(func.count()).select_from(VerdictModel)) == 1
         )
 
+        await database.close()
+
+    asyncio.run(scenario())
+
+
+def test_explanation_stage_persists_llm_output() -> None:
+    async def scenario() -> None:
+        database = await _new_database()
+        session_factory = database.session_factory
+        scan_id = await _seed_scan(session_factory, games=10)
+        scan_uuid = UUID(scan_id)
+
+        await ChessAnalysisStage(session_factory, FakeChessEngine()).run(scan_uuid)
+        await ScoringStage(session_factory, BaselineScorer(_metadata())).run(scan_uuid)
+
+        async with session_factory() as session:
+            before = await session.scalar(
+                select(VerdictModel).where(VerdictModel.scan_id == scan_id)
+            )
+            assert before is not None
+            risk_score = before.risk_score
+            model_version = before.model_version
+
+        explainer = FakeLLMExplainer()
+        await ExplanationStage(session_factory, explainer).run(scan_uuid)
+        assert explainer.calls == 1
+
+        async with session_factory() as session:
+            verdict = await session.scalar(
+                select(VerdictModel).where(VerdictModel.scan_id == scan_id)
+            )
+            assert verdict is not None
+            assert verdict.risk_score == risk_score
+            assert verdict.model_version == model_version
+            assert verdict.summary.startswith("Итог:")
+            assert verdict.prompt_version == "rag-v1"
+            assert verdict.explanation is not None
+            assert verdict.explanation["source"] == "llm"
+            assert verdict.explanation["provider"] == "fake"
+            assert verdict.explanation["model"] == "fake-model"
+            evidence_codes = {item["code"] for item in verdict.evidence}
+            reasoning_codes = {
+                item["evidence_code"] for item in verdict.explanation["reasoning"]
+            }
+            assert reasoning_codes
+            assert reasoning_codes <= evidence_codes
+            assert verdict.explanation["sources"]
+            assert all(
+                item["direction"] in {"supports_risk", "reduces_risk", "neutral"}
+                for item in verdict.explanation["reasoning"]
+            )
+        await database.close()
+
+    asyncio.run(scenario())
+
+
+def test_get_verdict_exposes_explanation_and_contributions() -> None:
+    async def scenario() -> None:
+        database = await _new_database()
+        session_factory = database.session_factory
+        scan_id = await _seed_scan(session_factory, games=10)
+        scan_uuid = UUID(scan_id)
+
+        await ChessAnalysisStage(session_factory, FakeChessEngine()).run(scan_uuid)
+        await ScoringStage(session_factory, BaselineScorer(_metadata())).run(scan_uuid)
+        await ExplanationStage(session_factory, DeterministicExplainer()).run(scan_uuid)
+
+        async with session_factory() as session:
+            verdict = await session.scalar(
+                select(VerdictModel).where(VerdictModel.scan_id == scan_id)
+            )
+            assert verdict is not None
+            # EvidenceItem must accept the contribution fields stored by scoring.
+            raw_item = EvidenceItem.model_validate(verdict.evidence[0])
+            assert raw_item.contribution is not None
+            assert raw_item.contribution_share is not None
+            assert raw_item.direction is not None
+
+            scan = await session.get(ScanModel, scan_id)
+            assert scan is not None
+            scan.status = DomainScanStatus.COMPLETED.value
+            await session.commit()
+
+            response = await get_scan_verdict(scan_uuid, session=session)
+            assert response.explanation is not None
+            assert response.explanation.source == "deterministic"
+            assert response.explanation.reasoning
+            assert response.summary == verdict.summary
+            assert any(item.contribution is not None for item in response.evidence)
         await database.close()
 
     asyncio.run(scenario())

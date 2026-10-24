@@ -6,6 +6,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl
 
+from packages.llm.contracts import ExplanationDirection, ExplanationOutput
+
 
 class DTOModel(BaseModel):
     """Base DTO configuration shared by all API models."""
@@ -58,6 +60,9 @@ class EvidenceItem(DTOModel):
     value: float
     baseline: float
     weight: float
+    contribution: float | None = None
+    contribution_share: float | None = None
+    direction: ExplanationDirection | None = None
 
 
 class VerdictResponse(DTOModel):
@@ -71,6 +76,7 @@ class VerdictResponse(DTOModel):
     evidence: list[EvidenceItem]
     limitations: list[str] = Field(min_length=1)
     model_version: str
+    explanation: ExplanationOutput | None = None
 
 
 class GameAggregateDTO(DTOModel):
