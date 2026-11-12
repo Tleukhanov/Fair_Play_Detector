@@ -441,3 +441,8 @@ Detection in Online Chess. KDD 2026. https://doi.org/10.1145/3770855.3817587
 ```
 
 ChessFraud-Synth — производное от публичной Lichess DB (CC0).
+
+---
+
+**Build. Learn. Understand.**
+© Ералы Тлеуханов · [tleukhanov.me](https://tleukhanov.me)
