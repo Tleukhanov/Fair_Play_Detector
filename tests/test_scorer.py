@@ -249,6 +249,17 @@ def test_insufficient_games_raises(artifact_dir: Path) -> None:
         scorer.score(ScoringInput(username_normalized="tester", games=games))
 
 
+def test_scoring_works_with_minimum_games(artifact_dir: Path) -> None:
+    scorer = TrainedScorer.load(artifact_dir)
+    games = [_game() for _ in range(scorer.minimum_games)]
+
+    result = scorer.score(ScoringInput(username_normalized="tester", games=games))
+
+    assert result.games_analyzed == scorer.minimum_games
+    assert 0.0 <= result.risk_score <= 1.0
+    assert result.risk_level in {"low_risk", "suspicious", "high_risk"}
+
+
 def test_vector_length_and_order() -> None:
     game = _game()
     vector = game_feature_vector(game)

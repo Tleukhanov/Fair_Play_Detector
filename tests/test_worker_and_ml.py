@@ -54,10 +54,15 @@ def test_scan_state_rejects_terminal_transition() -> None:
         ScanStateMachine.transition(DomainScanStatus.COMPLETED, DomainScanStatus.QUEUED)
 
 
-def test_baseline_requires_ten_games() -> None:
+def test_baseline_requires_minimum_games() -> None:
     scorer = BaselineScorer(make_metadata())
     with pytest.raises(InsufficientGamesError):
-        scorer.score(ScoringInput(username_normalized="tester", games=[make_game()] * 9))
+        scorer.score(
+            ScoringInput(
+                username_normalized="tester",
+                games=[make_game()] * (scorer.minimum_games - 1),
+            )
+        )
 
 
 def test_explanation_is_grounded_and_deterministic() -> None:

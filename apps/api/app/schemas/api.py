@@ -33,7 +33,7 @@ class ScanStatus(StrEnum):
 
 class ScanCreateRequest(DTOModel):
     username: str = Field(min_length=1, max_length=30, pattern=r"^[A-Za-z0-9_][A-Za-z0-9_-]*$")
-    max_games: int = Field(default=30, ge=10, le=50)
+    max_games: int = Field(default=30, ge=5, le=50)
     speed: str = Field(default="blitz", pattern=r"^(blitz|rapid)$")
     rated_only: bool = True
 
@@ -71,7 +71,7 @@ class VerdictResponse(DTOModel):
     risk_level: RiskLevel
     risk_score: float = Field(ge=0.0, le=1.0)
     confidence_interval: tuple[float, float]
-    games_analyzed: int = Field(ge=10)
+    games_analyzed: int = Field(ge=5)
     summary: str
     evidence: list[EvidenceItem]
     limitations: list[str] = Field(min_length=1)

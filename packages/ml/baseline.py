@@ -27,7 +27,7 @@ class BaselineScorer:
     scale, not calibrated probabilities.
     """
 
-    minimum_games = 10
+    minimum_games = 5
 
     def __init__(self, metadata: ModelMetadata) -> None:
         self._metadata = metadata

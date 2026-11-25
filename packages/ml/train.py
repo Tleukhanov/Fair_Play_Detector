@@ -654,7 +654,7 @@ def _player_level_baseline(
     """Evaluate BaselineScorer and the model at the player level on test players.
 
     ``BaselineScorer`` is a player-level heuristic with a documented minimum of
-    10 games, so it is compared on players with at least 10 test games.  A
+    5 games, so it is compared on players with at least 5 test games.  A
     player's target is the majority of their labelled games; the sample is small
     and the report says so instead of pretending it is powered.
     """

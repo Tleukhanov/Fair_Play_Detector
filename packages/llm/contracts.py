@@ -72,7 +72,7 @@ class ExplanationInput(ExplanationModel):
     risk_level: str
     risk_score: float = Field(ge=0.0, le=1.0)
     confidence_interval: tuple[float, float]
-    games_analyzed: int = Field(ge=10)
+    games_analyzed: int = Field(ge=5)
     evidence: list[ExplanationEvidence]
     limitations: list[str] = Field(min_length=1)
     model_version: str = Field(min_length=1)

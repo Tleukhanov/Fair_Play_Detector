@@ -323,13 +323,19 @@ def _explanation_input(result: ScoreResult) -> ExplanationInput:
     """Build the strict LLM input from a numeric score result."""
 
     thresholds = result.model.thresholds
+    limitations = list(_DEFAULT_LIMITATIONS)
+    if result.games_analyzed < 10:
+        limitations.append(
+            f"Низкая выборка: оценка основана на {result.games_analyzed} партиях "
+            "(рекомендуется не менее 10). Вывод менее устойчив."
+        )
     return ExplanationInput(
         risk_level=result.risk_level,
         risk_score=result.risk_score,
         confidence_interval=result.confidence_interval,
         games_analyzed=result.games_analyzed,
         evidence=_explanation_evidence(result.evidence),
-        limitations=list(_DEFAULT_LIMITATIONS),
+        limitations=limitations,
         model_version=result.model.model_version,
         prompt_version=PROMPT_VERSION,
         thresholds=ExplanationThresholds(
